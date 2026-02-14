@@ -1,0 +1,3 @@
+[submodule "asr/GigaAM"]
+	path = asr/GigaAM
+	url = https://github.com/salute-developers/GigaAM.git
