@@ -1,0 +1,6 @@
+# Gateway + RAG + Storage (основное окружение)
+gradio>=5.0
+chromadb>=1.0
+sentence-transformers
+httpx
+psutil

@@ -1,0 +1,8 @@
+# ASR worker
+-e ./GigaAM
+torch
+torchaudio
+onnxruntime
+soundfile
+librosa
+pyannote.audio
