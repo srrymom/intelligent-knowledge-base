@@ -5,7 +5,35 @@ import psutil
 import httpx
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from shared.config import LOCK_FILE, OLLAMA_URL
+from shared.config import LOCK_FILE, OLLAMA_URL, PROJECT_ROOT
+
+# Popen-объекты воркеров — регистрируются из app.py при старте
+_workers: dict = {}
+
+
+def register_workers(asr_proc, llm_proc):
+    _workers["asr"] = {"proc": asr_proc, "label": "ASR Worker", "script": "asr/worker.py"}
+    _workers["llm"] = {"proc": llm_proc, "label": "LLM Worker", "script": "llm/worker.py"}
+
+
+def get_worker_health() -> list[dict]:
+    """Проверяет состояние каждого воркера. При падении — перезапускает."""
+    results = []
+    for key, info in _workers.items():
+        proc = info["proc"]
+        alive = proc.poll() is None  # None = процесс жив
+        if not alive:
+            # Перезапуск
+            venv = "Scripts" if sys.platform == "win32" else "bin"
+            python = os.path.join(PROJECT_ROOT, key, ".venv", venv, "python")
+            script = os.path.join(PROJECT_ROOT, info["script"])
+            new_proc = subprocess.Popen([python, script])
+            info["proc"] = new_proc
+            status = "перезапущен"
+        else:
+            status = "работает"
+        results.append({"label": info["label"], "alive": alive, "status": status})
+    return results
 
 
 def get_gpu_stats():
@@ -89,8 +117,15 @@ def format_status():
     cpu = get_cpu_stats()
     llm_status = get_ollama_status()
     asr = get_asr_status()
+    worker_health = get_worker_health()
 
     lines = []
+
+    if worker_health:
+        for w in worker_health:
+            icon = "🟢" if w["alive"] else "🔴"
+            lines.append(f"{icon} {w['label']}: {w['status']}")
+        lines.append("")
 
     if gpu["available"]:
         vram_pct = round(gpu["vram_used_mb"] / gpu["vram_total_mb"] * 100)

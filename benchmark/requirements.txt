@@ -1,0 +1,22 @@
+# Зависимости для benchmark/ (устанавливать в gradio-env или отдельное venv)
+#
+# Для eval_asr.py и compare_asr.py нужен ASR-окружение (asr/.venv):
+#   asr/.venv содержит gigaam, torch, torchaudio, soundfile
+#   Дополнительно в asr/.venv: pip install datasets
+#
+# Для eval_summary.py, eval_rag.py, cascade_analysis.py — основной venv (gradio-env):
+#   Уже содержит: ollama, chromadb, sentence-transformers
+#   Дополнительно не требуется.
+#
+# Для compare_asr.py с Whisper (опционально):
+#   pip install openai-whisper
+#
+# HuggingFace авторизация для Common Voice RU:
+#   huggingface-cli login
+
+# Только для ASR-вenv
+datasets>=2.14
+soundfile>=0.12
+
+# Опционально — для сравнения с Whisper
+# openai-whisper

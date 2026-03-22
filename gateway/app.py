@@ -2,43 +2,45 @@ import os
 import subprocess
 import sys
 import gradio as gr
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "storage"))
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "rag"))
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from shared.config import PROJECT_ROOT
-from kb import load_kb_list, load_kb_entry, delete_kb_entry
+from shared.config import PROJECT_ROOT, SUMMARIZATION_METHODS
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "storage"))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "rag"))
+from kb import load_kb_list, load_kb_entry, delete_kb_entry, get_kb_stats, get_all_topics
 from engine import ask as rag_ask, ensure_indexed
 
+from monitor import format_status, register_workers
 
-from monitor import format_status
-from formatting import format_segments
-from handlers import save_media, save_text, poll_outputs, reformat
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "shared"))
+from log import read_tail
+from formatting import (
+    format_segments, render_topics, render_word_stats,
+    render_kb_stats,
+)
+from handlers import save_media, save_text, poll_outputs, reformat, make_export_file
 from gradio import ChatMessage
 
 
-
-
-
-
 def start_workers():
-    # запуск  воркеров
-    asr_python = os.path.join(PROJECT_ROOT, "asr", ".venv", "Scripts", "python.exe")
+    venv = "Scripts" if sys.platform == "win32" else "bin"
+    python_name = "python.exe" if sys.platform == "win32" else "python"
+    asr_python = os.path.join(PROJECT_ROOT, "asr", ".venv", venv, python_name)
     asr_worker = os.path.join(PROJECT_ROOT, "asr", "worker.py")
-    llm_python = os.path.join(PROJECT_ROOT, "llm", ".venv", "Scripts", "python.exe")
+    llm_python = os.path.join(PROJECT_ROOT, "llm", ".venv", venv, python_name)
     llm_worker = os.path.join(PROJECT_ROOT, "llm", "worker.py")
+    asr_proc = subprocess.Popen([asr_python, asr_worker])
+    llm_proc = subprocess.Popen([llm_python, llm_worker])
+    register_workers(asr_proc, llm_proc)
 
-    subprocess.Popen([asr_python, asr_worker])
-    subprocess.Popen([llm_python, llm_worker])
 
-
+# ─── Вкладка «Транскрипция» ───────────────────────────────────────────────────
 
 def build_transcription_tab():
-    # вкладка "Транскрипция"
-
     with gr.Tab("Транскрипция"):
         with gr.Row():
-            # ввод
+            # — левая колонка: ввод
             with gr.Column():
                 with gr.Tabs():
                     with gr.Tab("Аудио"):
@@ -68,7 +70,7 @@ def build_transcription_tab():
                         )
                         text_btn = gr.Button("Отправить")
 
-            # результат
+            # — правая колонка: результат
             with gr.Column():
                 mode = gr.Radio(
                     choices=["С временными метками", "Сплошной текст"],
@@ -76,18 +78,40 @@ def build_transcription_tab():
                     label="Режим вывода",
                 )
                 output = gr.Textbox(label="Транскрипция")
-                summary_output = gr.Textbox(label="Резюме (LLM)")
+                stats_html = gr.HTML()
+                report_mode = gr.Radio(
+                    ["Конспект", "Структурированный отчёт"],
+                    value="Конспект",
+                    show_label=False,
+                    container=False,
+                )
+                sum_method = gr.Radio(
+                    SUMMARIZATION_METHODS,
+                    value="Hierarchical",
+                    label="Метод суммаризации",
+                )
+                summary_output = gr.Textbox(label="Конспект (LLM)")
+                summary_report_md = gr.Markdown(visible=False)
+                topics_html = gr.HTML()
+                export_file = gr.File(
+                    label="Скачать конспект (.md)",
+                    visible=False,
+                    interactive=False,
+                )
 
-        # панель мониторинга (свернута по умолчанию)
         with gr.Accordion("Мониторинг ресурсов", open=False):
             monitor_box = gr.Textbox(
                 label="Состояние системы",
                 lines=8,
                 interactive=False,
             )
+            activity_log_box = gr.Textbox(
+                label="Журнал активности",
+                lines=6,
+                interactive=False,
+            )
             refresh_btn = gr.Button("Обновить", size="sm")
 
-    # возвращаем все компоненты, которые нужны для привязки событий
     return {
         "audio_input": audio_input,
         "audio_btn": audio_btn,
@@ -98,24 +122,112 @@ def build_transcription_tab():
         "text_btn": text_btn,
         "mode": mode,
         "output": output,
+        "stats_html": stats_html,
+        "report_mode": report_mode,
+        "sum_method": sum_method,
         "summary_output": summary_output,
+        "summary_report_md": summary_report_md,
+        "topics_html": topics_html,
+        "export_file": export_file,
         "monitor_box": monitor_box,
+        "activity_log_box": activity_log_box,
         "refresh_btn": refresh_btn,
     }
 
 
+# ─── Вкладка «База знаний» ────────────────────────────────────────────────────
 
+def build_kb_tab():
+    with gr.Tab("База знаний") as kb_tab:
+        # Шапка со статистикой
+        kb_stats_html = gr.HTML()
+
+        with gr.Row():
+            # — левая колонка: поиск + список
+            with gr.Column(scale=1):
+                kb_search = gr.Textbox(
+                    placeholder="Поиск по названию...",
+                    show_label=False,
+                    container=False,
+                )
+                kb_topic_filter = gr.Dropdown(
+                    choices=[],
+                    value=None,
+                    label="Фильтр по теме",
+                    interactive=True,
+                    allow_custom_value=False,
+                )
+                kb_table = gr.Dataframe(
+                    headers=["Дата", "Заголовок"],
+                    datatype=["str", "str"],
+                    type="array",
+                    interactive=False,
+                    label="Сохранённые лекции",
+                    wrap=True,
+                )
+                with gr.Row():
+                    kb_refresh_btn = gr.Button("Обновить", size="sm")
+                    kb_delete_btn = gr.Button(
+                        "Удалить выбранную", size="sm", variant="stop"
+                    )
+
+            # — правая колонка: детали записи
+            with gr.Column(scale=2):
+                kb_mode = gr.Radio(
+                    choices=["С временными метками", "Сплошной текст"],
+                    value="С временными метками",
+                    label="Режим вывода",
+                )
+                kb_title = gr.Textbox(
+                    label="Название", lines=1, interactive=False, container=False
+                )
+                kb_topics_html = gr.HTML()
+                kb_transcript = gr.Textbox(
+                    label="Транскрипция", lines=10, interactive=False,
+                )
+                kb_report_mode = gr.Radio(
+                    ["Конспект", "Структурированный отчёт"],
+                    value="Конспект",
+                    show_label=False,
+                    container=False,
+                )
+                kb_summary = gr.Textbox(
+                    label="Конспект", lines=5, interactive=False,
+                )
+                kb_report_md = gr.Markdown(visible=False)
+                kb_export_file = gr.File(
+                    label="Скачать конспект (.md)",
+                    visible=False,
+                    interactive=False,
+                )
+
+    return {
+        "kb_tab": kb_tab,
+        "kb_stats_html": kb_stats_html,
+        "kb_search": kb_search,
+        "kb_topic_filter": kb_topic_filter,
+        "kb_table": kb_table,
+        "kb_refresh_btn": kb_refresh_btn,
+        "kb_delete_btn": kb_delete_btn,
+        "kb_mode": kb_mode,
+        "kb_title": kb_title,
+        "kb_topics_html": kb_topics_html,
+        "kb_transcript": kb_transcript,
+        "kb_report_mode": kb_report_mode,
+        "kb_summary": kb_summary,
+        "kb_report_md": kb_report_md,
+        "kb_export_file": kb_export_file,
+    }
+
+
+# ─── Вкладка «Чат» ───────────────────────────────────────────────────────────
 
 def chat_respond(message, history):
-    # вызов RAG: поиск по KB + генерация ответа
     result = rag_ask(message)
     answer = result["answer"]
     sources = result["sources"]
 
-    # источники списком для метадаты в чате
     sources_text = "\n".join(f"- {s['title']}" for s in sources)
-
-    # два сообщения: ответ + свернутые источники
     new_messages = [
         ChatMessage(content=answer),
         ChatMessage(
@@ -123,15 +235,12 @@ def chat_respond(message, history):
             metadata={"title": "Источники", "status": "done"},
         ),
     ]
-
-    # варианты для Radio в правой панели
     choices = [s["title"] for s in sources]
     ids = [s["id"] for s in sources]
     return new_messages, choices, ids
 
 
 def on_source_select(title, source_ids, source_titles):
-    # клик по источнику — загрузить запись из KB
     if not title or not source_titles:
         return "", "", ""
     try:
@@ -147,9 +256,6 @@ def on_source_select(title, source_ids, source_titles):
 
 
 def build_chat_tab():
-    # вкладка "Чат"
-    # левая колонка - чат с RAG
-    # правая колонка - кликабельные источники + детали
     with gr.Tab("Чат"):
         with gr.Row():
             with gr.Column(scale=2):
@@ -165,14 +271,12 @@ def build_chat_tab():
                     chat_btn = gr.Button("Отправить", scale=1)
             with gr.Column(scale=1):
                 gr.Markdown("### Источники")
-                # список источников (обновляется после каждого ответа)
                 source_radio = gr.Radio(
                     choices=[], label="Найденные записи", interactive=True,
                 )
-                # детали выбранного источника
                 src_title = gr.Textbox(label="Название", interactive=False, lines=1)
                 src_transcript = gr.Textbox(label="Транскрипция", interactive=False, lines=8)
-                src_summary = gr.Textbox(label="Резюме", interactive=False, lines=4)
+                src_summary = gr.Textbox(label="Конспект", interactive=False, lines=4)
 
     return {
         "chatbot": chatbot,
@@ -184,160 +288,198 @@ def build_chat_tab():
         "src_summary": src_summary,
     }
 
-def build_kb_tab():
-    # вкладка "База знаний"
-    # левая колонка - таблица записей и кнопки управления
-    # правая колонка - просмотр выбранной записи
-    with gr.Tab("База знаний"):
-        with gr.Row():
-            # список записей
-            with gr.Column(scale=1):
-                kb_table = gr.Dataframe(
-                    headers=["Дата", "Заголовок"],
-                    datatype=["str", "str"],
-                    type="array",
-                    interactive=False,
-                    label="Сохранённые записи",
-                    wrap=True,
-                )
-                with gr.Row():
-                    kb_refresh_btn = gr.Button("Обновить список", size="sm")
-                    kb_delete_btn = gr.Button(
-                        "Удалить выбранную", size="sm", variant="stop"
-                    )
 
-            # детали выбранной записи
-            with gr.Column(scale=2):
-                kb_mode = gr.Radio(
-                    choices=["С временными метками", "Сплошной текст"],
-                    value="С временными метками",
-                    label="Режим вывода",
-                )
-                kb_title = gr.Textbox(
-                    label="Название", lines=1, interactive=False, container=False
-                )
-                kb_transcript = gr.Textbox(
-                    label="Транскрипция", lines=12, interactive=False,
-                )
-                kb_summary = gr.Textbox(
-                    label="Резюме", lines=5, interactive=False,
-                )
+# ─── Обработчики KB ──────────────────────────────────────────────────────────
 
-    return {
-        "kb_table": kb_table,
-        "kb_refresh_btn": kb_refresh_btn,
-        "kb_delete_btn": kb_delete_btn,
-        "kb_mode": kb_mode,
-        "kb_title": kb_title,
-        "kb_transcript": kb_transcript,
-        "kb_summary": kb_summary,
-    }
-
+def _kb_stats_html():
+    count, words, secs = get_kb_stats()
+    return render_kb_stats(count, words, secs)
 
 
 def refresh_kb_table():
-    # обработчики событий базы знаний
-    # загрузить список записей и сбросить выделение
     table_data, uuids = load_kb_list()
-    return table_data, uuids, None, None, "", "", ""
+    stats = _kb_stats_html()
+    topics = get_all_topics()
+    return (
+        table_data, uuids,
+        None, None,                                          # selected_id, selected_segments
+        "", "", "",                                          # transcript, summary, title
+        "",                                                  # topics_html
+        stats,                                               # kb_stats_html
+        gr.update(visible=False),                            # kb_export_file
+        gr.update(choices=topics, value=None),               # kb_topic_filter
+    )
+
+
+def filter_kb_table(search_text, topic_filter):
+    """Фильтрует таблицу по тексту названия и/или выбранной теме."""
+    table_data, uuids = load_kb_list(topic_filter=topic_filter or None)
+    if not (search_text or "").strip():
+        return table_data, uuids
+    q = search_text.lower()
+    filtered_data, filtered_uuids = [], []
+    for row, uid in zip(table_data, uuids):
+        if q in row[1].lower():
+            filtered_data.append(row)
+            filtered_uuids.append(uid)
+    return filtered_data, filtered_uuids
 
 
 def on_kb_select(evt: gr.SelectData, uuid_list):
-    # клик по строке таблицы - загрузить полную запись
     row_idx = evt.index[0]
     if row_idx >= len(uuid_list):
-        return None, None, "", "", ""
+        return None, None, "", "", "", "", gr.update(visible=False), None
 
     entry_id = uuid_list[row_idx]
     entry = load_kb_entry(entry_id)
     if entry is None:
-        return None, None, "", "", ""
+        return None, None, "", "", "", "", gr.update(visible=False), None
 
     segments = entry.get("segments", [])
     summary = entry.get("summary", "")
     title = entry.get("title", "")
+    topics = entry.get("topics", [])
+    structured_report = entry.get("structured_report", "")
     transcript_text = format_segments(segments, "С временными метками")
-    return entry_id, segments, transcript_text, summary, title
+    topics_html = render_topics(topics)
+
+    export_path = make_export_file(entry_id)
+    export_update = gr.update(value=export_path, visible=bool(export_path))
+
+    return entry_id, segments, transcript_text, summary, title, topics_html, export_update, structured_report
 
 
 def on_kb_delete(selected_id):
-    # удалить запись и обновить таблицу
     if selected_id:
         delete_kb_entry(selected_id)
-    table_data, uuids = load_kb_list()
-    return table_data, uuids, None, None, "", "", ""
+    return refresh_kb_table()
 
 
 def on_kb_mode_change(kb_segs, kb_m):
-    # переключение режима отображения транскрипции
     if not kb_segs:
         return gr.update()
     return format_segments(kb_segs, kb_m)
 
 
-# привязка событий вкладки "Транскрипция"
+# ─── Привязка событий: Транскрипция ──────────────────────────────────────────
 
 def wire_transcription_events(t, state, timer, monitor_timer):
-    # t     - компоненты из build_transcription_tab
-    # state - общие gr.State (uuid, segments)
-
-    # обновление монитора каждые 5 сек + кнопка
-    monitor_timer.tick(fn=lambda: format_status(), outputs=[t["monitor_box"]])
-    t["refresh_btn"].click(fn=lambda: format_status(), outputs=[t["monitor_box"]])
-
-    # общие выходы для кнопок отправки
-    send_outputs = [t["output"], state["current_uuid"],
-                    t["summary_output"], state["cached_segments"]]
-
-    # отправка аудио / видео / текста
-    t["audio_btn"].click(
-        fn=save_media, inputs=[t["audio_input"]], outputs=send_outputs,
+    monitor_timer.tick(
+        fn=lambda: (format_status(), read_tail(10)),
+        outputs=[t["monitor_box"], t["activity_log_box"]],
     )
-    t["video_btn"].click(
-        fn=save_media, inputs=[t["video_input"]], outputs=send_outputs,
+    t["refresh_btn"].click(
+        fn=lambda: (format_status(), read_tail(10)),
+        outputs=[t["monitor_box"], t["activity_log_box"]],
     )
+
+    # Выходы кнопок «Отправить» — сбрасываем summary + stats при новой отправке
+    send_outputs = [
+        t["output"], state["current_uuid"],
+        t["summary_output"], state["cached_segments"],
+        t["stats_html"],
+    ]
+
+    t["audio_btn"].click(fn=save_media, inputs=[t["audio_input"], t["report_mode"], t["sum_method"]], outputs=send_outputs)
+    t["video_btn"].click(fn=save_media, inputs=[t["video_input"], t["report_mode"], t["sum_method"]], outputs=send_outputs)
     t["text_btn"].click(
         fn=save_text,
-        inputs=[t["text_input"], t["text_file"]],
+        inputs=[t["text_input"], t["text_file"], t["report_mode"], t["sum_method"]],
         outputs=send_outputs,
     )
 
-    # поллинг результатов каждые 2 сек
+    # Поллинг: 8 выходов (см. handlers.py _N = 8)
     timer.tick(
         fn=poll_outputs,
         inputs=[state["current_uuid"], t["mode"]],
-        outputs=[t["output"], t["summary_output"],
-                 state["current_uuid"], state["cached_segments"]],
+        outputs=[
+            t["output"], t["summary_output"],
+            state["current_uuid"], state["cached_segments"],
+            t["topics_html"], t["stats_html"], t["export_file"],
+            state["structured_report"],
+        ],
     )
 
-    # переключение режима отображения
     t["mode"].change(
         fn=reformat,
         inputs=[state["cached_segments"], t["mode"]],
         outputs=t["output"],
     )
 
+    def on_report_mode_change(mode, structured, current_uuid):
+        if mode == "Структурированный отчёт":
+            if structured:
+                return gr.update(visible=False), gr.update(value=structured, visible=True)
+            # отчёт ещё не сгенерирован (файл не отправлен или не готов)
+            return gr.update(visible=False), gr.update(value="", visible=True)
+        summary = ""
+        if current_uuid:
+            entry = load_kb_entry(current_uuid)
+            if entry:
+                summary = entry.get("summary", "")
+        return gr.update(value=summary, visible=True), gr.update(visible=False)
 
-# привязка событий вкладки "База знаний"
+    t["report_mode"].change(
+        fn=on_report_mode_change,
+        inputs=[t["report_mode"], state["structured_report"], state["current_uuid"]],
+        outputs=[t["summary_output"], t["summary_report_md"]],
+    )
+
+
+# ─── Привязка событий: База знаний ───────────────────────────────────────────
 
 def wire_kb_events(kb, state, demo):
-    # kb    - компоненты из build_kb_tab
-    # state - общие gr.State (kb_uuid_list, kb_selected_*)
-
-    # выходы, которые обновляются при обновлении/удалении записи
+    # Полный список выходов при обновлении таблицы
     table_outputs = [
-        kb["kb_table"], state["kb_uuid_list"], state["kb_selected_id"],
-        state["kb_selected_segments"],
+        kb["kb_table"], state["kb_uuid_list"],
+        state["kb_selected_id"], state["kb_selected_segments"],
         kb["kb_transcript"], kb["kb_summary"], kb["kb_title"],
+        kb["kb_topics_html"], kb["kb_stats_html"], kb["kb_export_file"],
+        kb["kb_topic_filter"],
     ]
 
     kb["kb_refresh_btn"].click(fn=refresh_kb_table, outputs=table_outputs)
 
+    # Автообновление при переключении на вкладку
+    kb["kb_tab"].select(fn=refresh_kb_table, outputs=table_outputs)
+
+    # Поиск + фильтр по теме — обновляют только таблицу и uuid-список
+    kb["kb_search"].change(
+        fn=filter_kb_table,
+        inputs=[kb["kb_search"], kb["kb_topic_filter"]],
+        outputs=[kb["kb_table"], state["kb_uuid_list"]],
+    )
+    kb["kb_topic_filter"].change(
+        fn=filter_kb_table,
+        inputs=[kb["kb_search"], kb["kb_topic_filter"]],
+        outputs=[kb["kb_table"], state["kb_uuid_list"]],
+    )
+
     kb["kb_table"].select(
         fn=on_kb_select,
         inputs=[state["kb_uuid_list"]],
-        outputs=[state["kb_selected_id"], state["kb_selected_segments"],
-                 kb["kb_transcript"], kb["kb_summary"], kb["kb_title"]],
+        outputs=[
+            state["kb_selected_id"], state["kb_selected_segments"],
+            kb["kb_transcript"], kb["kb_summary"], kb["kb_title"],
+            kb["kb_topics_html"], kb["kb_export_file"],
+            state["kb_structured_report"],
+        ],
+    )
+
+    def on_kb_report_mode(mode, structured, selected_id):
+        if mode == "Структурированный отчёт":
+            return gr.update(visible=False), gr.update(value=structured or "", visible=True)
+        summary = ""
+        if selected_id:
+            entry = load_kb_entry(selected_id)
+            if entry:
+                summary = entry.get("summary", "")
+        return gr.update(value=summary, visible=True), gr.update(visible=False)
+
+    kb["kb_report_mode"].change(
+        fn=on_kb_report_mode,
+        inputs=[kb["kb_report_mode"], state["kb_structured_report"], state["kb_selected_id"]],
+        outputs=[kb["kb_summary"], kb["kb_report_md"]],
     )
 
     kb["kb_mode"].change(
@@ -352,40 +494,36 @@ def wire_kb_events(kb, state, demo):
         outputs=table_outputs,
     )
 
-    # загрузить список записей при старте
     demo.load(fn=refresh_kb_table, outputs=table_outputs)
 
 
-# привязка событий вкладки "Чат"
+# ─── Привязка событий: Чат ───────────────────────────────────────────────────
 
 def wire_chat_events(chat, state):
     submit_outputs = [
-        chat["chatbot"],       # обновленная история
-        chat["source_radio"],  # варианты источников
-        state["chat_source_ids"],     # id источников
-        state["chat_source_titles"],  # названия источников
-        chat["chat_input"],    # очистка поля ввода
-        chat["src_title"],     # сброс деталей
+        chat["chatbot"],
+        chat["source_radio"],
+        state["chat_source_ids"],
+        state["chat_source_titles"],
+        chat["chat_input"],
+        chat["src_title"],
         chat["src_transcript"],
         chat["src_summary"],
     ]
 
     def on_submit(message, history):
-        # добавляем вопрос пользователя в историю
         history.append(ChatMessage(role="user", content=message))
         new_messages, choices, ids = chat_respond(message, history)
         for msg in new_messages:
             history.append(msg)
-        # обновить Radio с новыми источниками, сбросить детали
         return (
             history,
             gr.update(choices=choices, value=None),
             ids, choices,
-            "",   # очистить поле ввода
-            "", "", "",  # сбросить детали источника
+            "",
+            "", "", "",
         )
 
-    # кнопка и enter отправляют вопрос
     chat["chat_btn"].click(
         fn=on_submit,
         inputs=[chat["chat_input"], chat["chatbot"]],
@@ -397,7 +535,6 @@ def wire_chat_events(chat, state):
         outputs=submit_outputs,
     )
 
-    # клик по источнику — показать детали
     chat["source_radio"].change(
         fn=on_source_select,
         inputs=[chat["source_radio"], state["chat_source_ids"], state["chat_source_titles"]],
@@ -405,21 +542,22 @@ def wire_chat_events(chat, state):
     )
 
 
-# сборка и запуск
+# ─── Сборка и запуск ─────────────────────────────────────────────────────────
 
 start_workers()
 ensure_indexed()
 
 with gr.Blocks() as demo:
-    # скрытые состояния, общие для обеих вкладок
     state = {
-        "current_uuid":       gr.State(None),  # uuid текущей задачи
-        "cached_segments":    gr.State(None),  # сегменты для переформатирования
-        "kb_uuid_list":       gr.State([]),    # список uuid записей в таблице
-        "kb_selected_id":     gr.State(None),  # uuid выбранной записи
-        "kb_selected_segments": gr.State(None),  # сегменты выбранной записи
-        "chat_source_ids":    gr.State([]),    # id источников последнего ответа
-        "chat_source_titles": gr.State([]),    # названия источников
+        "current_uuid":           gr.State(None),
+        "cached_segments":        gr.State(None),
+        "structured_report":      gr.State(None),
+        "kb_uuid_list":           gr.State([]),
+        "kb_selected_id":         gr.State(None),
+        "kb_selected_segments":   gr.State(None),
+        "kb_structured_report":   gr.State(None),
+        "chat_source_ids":        gr.State([]),
+        "chat_source_titles":     gr.State([]),
     }
 
     with gr.Tabs():
@@ -427,9 +565,8 @@ with gr.Blocks() as demo:
         kb = build_kb_tab()
         chat = build_chat_tab()
 
-    # таймеры (живут вне вкладок)
-    timer = gr.Timer(value=2)          # поллинг результатов
-    monitor_timer = gr.Timer(value=5)  # обновление монитора
+    timer = gr.Timer(value=2)
+    monitor_timer = gr.Timer(value=5)
 
     wire_transcription_events(t, state, timer, monitor_timer)
     wire_kb_events(kb, state, demo)
