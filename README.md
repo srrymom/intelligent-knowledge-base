@@ -3,6 +3,13 @@
 > Прототип интеллектуальной базы знаний с автоматической транскрипцией аудио/видео, суммаризацией и RAG-поиском.
 > Разработан как исследовательский проект для оценки методов суммаризации длинных русскоязычных лекций в условиях ограниченных аппаратных ресурсов (4 GB VRAM).
 
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
+![Gradio](https://img.shields.io/badge/Gradio-UI-FF7C00?logo=gradio&logoColor=white)
+![Ollama](https://img.shields.io/badge/Ollama-qwen2.5:3b-000000?logo=ollama&logoColor=white)
+![ChromaDB](https://img.shields.io/badge/ChromaDB-vector%20store-E85D04?logoColor=white)
+![CUDA](https://img.shields.io/badge/CUDA-11.8+-76B900?logo=nvidia&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white)
+
 ![Скриншот интерфейса](docs/screenshot.png)
 
 ---
@@ -56,9 +63,14 @@ graph TB
             log["log.py — журнал"]
         end
         subgraph fs["data/"]
-            q[("queue/")] tr[("transcript/")] sm[("summary/")]
-            kbdir[("knowledge_base/")] ragdb[("rag_db/")]
-            lock["asr.lock"] proc[("processed/")] actlog[("activity.log")]
+            q[("queue/")]
+            tr[("transcript/")]
+            sm[("summary/")]
+            kbdir[("knowledge_base/")]
+            ragdb[("rag_db/")]
+            lock["asr.lock"]
+            proc[("processed/")]
+            actlog[("activity.log")]
         end
     end
 
