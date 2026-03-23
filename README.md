@@ -30,77 +30,26 @@
 ## Архитектура
 
 ```mermaid
-graph TB
-    subgraph ext["Внешняя среда"]
-        user["Пользователь (браузер)"]
-        ollama["Ollama Server / qwen2.5:3b"]
-        hf["Hugging Face Hub / multilingual-e5-small"]
-        ffmpeg["FFmpeg"]
-        gpu["NVIDIA GPU"]
+graph LR
+    user["🌐 Браузер"] -->|Gradio| gateway
+
+    subgraph gateway["Gateway"]
+        direction TB
+        ui["UI / app.py"]
+        mon["Watchdog / monitor.py"]
     end
 
-    subgraph sys["Intelligent Knowledge Base"]
-        subgraph gw["Gateway"]
-            app["app.py — точка входа, UI"]
-            handlers["handlers.py — загрузки и поллинг"]
-            fmt["formatting.py — рендеринг"]
-            mon["monitor.py — Watchdog + мониторинг"]
-        end
-        subgraph asr_pkg["ASR Worker"]
-            asr["worker.py — GigaAM"]
-        end
-        subgraph llm_pkg["LLM Worker"]
-            llm["worker.py — суммаризация"]
-        end
-        subgraph rag_pkg["RAG Engine"]
-            rag["engine.py — векторный поиск"]
-        end
-        subgraph storage_pkg["Storage"]
-            kb["kb.py — CRUD базы знаний"]
-        end
-        subgraph shared_pkg["Shared"]
-            cfg["config.py"]
-            log["log.py — журнал"]
-        end
-        subgraph fs["data/"]
-            q[("queue/")]
-            tr[("transcript/")]
-            sm[("summary/")]
-            kbdir[("knowledge_base/")]
-            ragdb[("rag_db/")]
-            lock["asr.lock"]
-            proc[("processed/")]
-            actlog[("activity.log")]
-        end
-    end
+    gateway -->|файловая очередь| asr["🎙 ASR Worker\nGigaAM"]
+    asr -->|транскрипт| gateway
+    gateway -->|транскрипт| llm["📝 LLM Worker\nсуммаризация"]
+    llm -->|конспект| gateway
+    gateway -->|индексация| rag["🔍 RAG Engine\nChromaDB"]
+    rag -->|ответ| gateway
 
-    user -->|HTTP Gradio| app
-    asr -->|CUDA| gpu
-    asr --> ffmpeg
-    llm --> ollama
-    rag --> ollama
-    rag -.-> hf
-    mon --> ollama
-    mon --> gpu
-    app --> handlers
-    app --> mon
-    app -.->|subprocess + watchdog| asr
-    app -.->|subprocess + watchdog| llm
-    mon -->|poll/restart| asr
-    mon -->|poll/restart| llm
-    asr --> log --> actlog
-    llm --> log
-    mon -->|read_tail| actlog
-    handlers --> q
-    asr --> tr
-    asr --> lock
-    llm --> tr
-    llm --> sm
-    handlers --> sm
-    handlers --> proc
-    handlers --> kbdir
-    kb --> kbdir
-    rag --> ragdb
+    asr -->|CUDA| gpu["NVIDIA GPU"]
+    llm -->|REST| ollama["Ollama\nqwen2.5:3b"]
+    rag -->|REST| ollama
+    rag -.->|embeddings| hf["HuggingFace\nmultilingual-e5-small"]
 ```
 
 Воркеры запускаются как подпроцессы (`subprocess.Popen`). IPC — через файловую систему (`data/`). Gateway отслеживает состояние воркеров и перезапускает их при падении.
