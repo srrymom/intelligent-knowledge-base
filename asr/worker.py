@@ -28,7 +28,7 @@ AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac"}
 
 
 def _unload_ollama():
-    """????????? LLM ?? VRAM ????? ????????? ASR-??????."""
+    """Выгружает LLM из VRAM перед загрузкой ASR-модели."""
     try:
         import urllib.request
         import json as _json
@@ -40,13 +40,13 @@ def _unload_ollama():
             method="POST",
         )
         urllib.request.urlopen(req, timeout=8)
-        print("Ollama: LLM ????????? ?? VRAM.")
+        print("Ollama: LLM выгружена из VRAM.")
     except Exception as e:
-        print(f"Ollama unload: {e} (??????????)")
+        print(f"Ollama unload: {e} (игнорируем)")
 
 
 def load_model(model_name=None):
-    """????????? ?????? GigaAM. ??????????? torchcodec/gigaam ?????????."""
+    """Загружает модель GigaAM. Импортирует torchcodec/gigaam отложенно."""
     import torchcodec  # noqa: F401
     import gigaam
     return gigaam.load_model(model_name or ASR_MODEL)
@@ -56,12 +56,12 @@ def transcribe_file(model, audio_path: str) -> list:
     segments = model.transcribe_longform(audio_path)
     return [
         s for s in segments
-        if s["transcription"].replace("?", "").replace(" ", "").strip()
+        if s["transcription"].replace("⁇", "").replace(" ", "").strip()
     ]
 
 
 def unload_model(model):
-    """????????? ?????? ?? GPU-?????? ??????????? ?????."""
+    """Выгружает модель из GPU-памяти максимально полно."""
     import gc
     del model
     gc.collect()
@@ -75,17 +75,17 @@ def unload_model(model):
 
 
 def _release_asr_resources(model):
-    write_event("ASR", "??????? ?????, ???????? ??????...")
+    write_event("ASR", "Очередь пуста, выгружаю модель...")
     unload_model(model)
     time.sleep(1)
     if os.path.exists(LOCK_FILE):
         os.remove(LOCK_FILE)
     release_gpu("asr")
-    write_event("ASR", "?????? ?????????, GPU ????????")
+    write_event("ASR", "Модель выгружена, GPU свободен")
 
 
 def run_worker():
-    write_event("ASR", "?????? ???????, ???????? ??????...")
+    write_event("ASR", "Воркер запущен, ожидание файлов...")
     model = None
     last_activity = 0.0
 
@@ -117,25 +117,25 @@ def run_worker():
                 time.sleep(1)
                 continue
 
-            write_event("ASR", "???????? ?????? GigaAM...")
+            write_event("ASR", "Загружаю модель GigaAM...")
             open(LOCK_FILE, "w").close()
             _unload_ollama()
             model = load_model()
             last_activity = time.time()
-            write_event("ASR", "?????? ?????????")
+            write_event("ASR", "Модель загружена")
 
         for audio_path in audio_files:
             fname = os.path.basename(audio_path)
             file_uuid = os.path.splitext(fname)[0]
-            write_event("ASR", f"?????????????: {fname}")
+            write_event("ASR", f"Транскрибирую: {fname}")
             t_start = time.time()
             try:
                 segments = transcribe_file(model, audio_path)
                 result = json.dumps(segments, ensure_ascii=False)
             except Exception as e:
-                write_event("ASR", f"?????? ????????????: {e}")
+                write_event("ASR", f"Ошибка транскрипции: {e}")
                 result = json.dumps(
-                    [{"transcription": f"?????? ????????????: {e}", "boundaries": [0, 0]}],
+                    [{"transcription": f"Ошибка транскрипции: {e}", "boundaries": [0, 0]}],
                     ensure_ascii=False,
                 )
 
@@ -146,7 +146,7 @@ def run_worker():
             os.remove(audio_path)
             seg_count = len(json.loads(result))
             last_activity = time.time()
-            write_event("ASR", f"??????: {seg_count} ????????? ?? {elapsed:.1f}?")
+            write_event("ASR", f"Готово: {seg_count} сегментов за {elapsed:.1f}с")
 
             if (read_gpu_state().get("requests") or {}).get("llm"):
                 break
