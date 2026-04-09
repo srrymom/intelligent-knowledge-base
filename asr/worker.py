@@ -1,12 +1,23 @@
+import glob
+import json
 import os
 import sys
 import time
-import glob
-import json
+
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from shared.config import QUEUE_DIR, TRANSCRIPT_DIR, LOCK_FILE, FFMPEG_PATH, ASR_MODEL, OLLAMA_URL, LLM_MODEL
+from shared.config import (
+    ASR_IDLE_TIMEOUT_SEC,
+    ASR_MODEL,
+    FFMPEG_PATH,
+    LLM_MODEL,
+    LOCK_FILE,
+    OLLAMA_URL,
+    QUEUE_DIR,
+    TRANSCRIPT_DIR,
+)
+from shared.gpu_coord import acquire_gpu, clear_gpu_request, read_gpu_state, release_gpu, request_gpu
 from shared.log import write_event
 
 if sys.platform == 'win32':
@@ -17,7 +28,7 @@ AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac"}
 
 
 def _unload_ollama():
-    """Выгружает LLM из VRAM перед загрузкой ASR-модели (только urllib, без зависимостей)."""
+    """????????? LLM ?? VRAM ????? ????????? ASR-??????."""
     try:
         import urllib.request
         import json as _json
@@ -29,48 +40,54 @@ def _unload_ollama():
             method="POST",
         )
         urllib.request.urlopen(req, timeout=8)
-        print("Ollama: LLM выгружена из VRAM.")
+        print("Ollama: LLM ????????? ?? VRAM.")
     except Exception as e:
-        print(f"Ollama unload: {e} (игнорируем)")
+        print(f"Ollama unload: {e} (??????????)")
 
 
 def load_model(model_name=None):
-    """Загружает модель GigaAM. Импортирует torchcodec/gigaam отложенно."""
+    """????????? ?????? GigaAM. ??????????? torchcodec/gigaam ?????????."""
     import torchcodec  # noqa: F401
     import gigaam
     return gigaam.load_model(model_name or ASR_MODEL)
 
 
 def transcribe_file(model, audio_path: str) -> list:
-    """
-    Транскрибирует аудиофайл моделью GigaAM.
-    Возвращает список сегментов: [{"transcription": str, "boundaries": [float, float]}, ...]
-    """
     segments = model.transcribe_longform(audio_path)
     return [
         s for s in segments
-        if s["transcription"].replace("⁇", "").replace(" ", "").strip()
+        if s["transcription"].replace("?", "").replace(" ", "").strip()
     ]
 
 
 def unload_model(model):
-    """Выгружает модель из GPU-памяти максимально полно."""
+    """????????? ?????? ?? GPU-?????? ??????????? ?????."""
     import gc
     del model
     gc.collect()
     if torch.cuda.is_available():
-        torch.cuda.synchronize()   # ждём завершения всех CUDA-операций
+        torch.cuda.synchronize()
         torch.cuda.empty_cache()
-        # ipc_collect нужен если другой процесс держит handle на ту же память
         try:
             torch.cuda.ipc_collect()
         except Exception:
             pass
 
 
+def _release_asr_resources(model):
+    write_event("ASR", "??????? ?????, ???????? ??????...")
+    unload_model(model)
+    time.sleep(1)
+    if os.path.exists(LOCK_FILE):
+        os.remove(LOCK_FILE)
+    release_gpu("asr")
+    write_event("ASR", "?????? ?????????, GPU ????????")
+
+
 def run_worker():
-    write_event("ASR", "Воркер запущен, ожидание файлов...")
+    write_event("ASR", "?????? ???????, ???????? ??????...")
     model = None
+    last_activity = 0.0
 
     while True:
         audio_files = [
@@ -79,45 +96,60 @@ def run_worker():
         ]
 
         if not audio_files:
+            clear_gpu_request("asr")
             if model is not None:
-                write_event("ASR", "Очередь пуста, выгружаю модель...")
-                unload_model(model)
-                model = None
-                time.sleep(1)   # даём CUDA время полностью освободить память
-                if os.path.exists(LOCK_FILE):
-                    os.remove(LOCK_FILE)
-                write_event("ASR", "Модель выгружена, GPU свободен")
+                state = read_gpu_state()
+                llm_waiting = (state.get("requests") or {}).get("llm")
+                idle_expired = (time.time() - last_activity) >= ASR_IDLE_TIMEOUT_SEC
+                if llm_waiting or idle_expired:
+                    _release_asr_resources(model)
+                    model = None
             time.sleep(2)
             continue
 
+        request_gpu("asr")
         if model is None:
-            write_event("ASR", "Загружаю модель GigaAM...")
+            state = read_gpu_state()
+            if state.get("owner") not in (None, "asr"):
+                time.sleep(1)
+                continue
+            if not acquire_gpu("asr"):
+                time.sleep(1)
+                continue
+
+            write_event("ASR", "???????? ?????? GigaAM...")
             open(LOCK_FILE, "w").close()
-            _unload_ollama()   # освобождаем VRAM от LLM перед загрузкой ASR
+            _unload_ollama()
             model = load_model()
-            write_event("ASR", "Модель загружена")
+            last_activity = time.time()
+            write_event("ASR", "?????? ?????????")
 
         for audio_path in audio_files:
             fname = os.path.basename(audio_path)
             file_uuid = os.path.splitext(fname)[0]
-            write_event("ASR", f"Транскрибирую: {fname}")
+            write_event("ASR", f"?????????????: {fname}")
             t_start = time.time()
             try:
                 segments = transcribe_file(model, audio_path)
                 result = json.dumps(segments, ensure_ascii=False)
             except Exception as e:
-                write_event("ASR", f"Ошибка транскрипции: {e}")
+                write_event("ASR", f"?????? ????????????: {e}")
                 result = json.dumps(
-                    [{"transcription": f"Ошибка транскрипции: {e}", "boundaries": [0, 0]}],
+                    [{"transcription": f"?????? ????????????: {e}", "boundaries": [0, 0]}],
                     ensure_ascii=False,
                 )
+
             elapsed = time.time() - t_start
             result_path = os.path.join(TRANSCRIPT_DIR, f"{file_uuid}.json")
             with open(result_path, "w", encoding="utf-8") as f:
                 f.write(result)
             os.remove(audio_path)
             seg_count = len(json.loads(result))
-            write_event("ASR", f"Готово: {seg_count} сегментов за {elapsed:.1f}с")
+            last_activity = time.time()
+            write_event("ASR", f"??????: {seg_count} ????????? ?? {elapsed:.1f}?")
+
+            if (read_gpu_state().get("requests") or {}).get("llm"):
+                break
 
         time.sleep(0.1)
 

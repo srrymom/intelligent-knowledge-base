@@ -12,6 +12,7 @@ from kb import load_kb_list, load_kb_entry, delete_kb_entry, get_kb_stats, get_a
 from engine import ask as rag_ask, ensure_indexed
 
 from monitor import format_status, register_workers
+from shared.gpu_coord import reset_gpu_state
 
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "shared"))
 from log import read_tail
@@ -24,6 +25,7 @@ from gradio import ChatMessage
 
 
 def start_workers():
+    reset_gpu_state()
     venv = "Scripts" if sys.platform == "win32" else "bin"
     python_name = "python.exe" if sys.platform == "win32" else "python"
     asr_python = os.path.join(PROJECT_ROOT, "asr", ".venv", venv, python_name)
@@ -35,7 +37,7 @@ def start_workers():
     register_workers(asr_proc, llm_proc)
 
 
-# ─── Вкладка «Транскрипция» ───────────────────────────────────────────────────
+# Вкладка транскрипция 
 
 def build_transcription_tab():
     with gr.Tab("Транскрипция"):
@@ -135,8 +137,7 @@ def build_transcription_tab():
     }
 
 
-# ─── Вкладка «База знаний» ────────────────────────────────────────────────────
-
+# вкладка база знаний
 def build_kb_tab():
     with gr.Tab("База знаний") as kb_tab:
         # Шапка со статистикой
@@ -220,8 +221,7 @@ def build_kb_tab():
     }
 
 
-# ─── Вкладка «Чат» ───────────────────────────────────────────────────────────
-
+# вкладка чат
 def chat_respond(message, history):
     result = rag_ask(message)
     answer = result["answer"]
@@ -289,7 +289,7 @@ def build_chat_tab():
     }
 
 
-# ─── Обработчики KB ──────────────────────────────────────────────────────────
+# обработчики KB
 
 def _kb_stats_html():
     count, words, secs = get_kb_stats()
@@ -361,7 +361,7 @@ def on_kb_mode_change(kb_segs, kb_m):
     return format_segments(kb_segs, kb_m)
 
 
-# ─── Привязка событий: Транскрипция ──────────────────────────────────────────
+# привязка событий: Транскрипция 
 
 def wire_transcription_events(t, state, timer, monitor_timer):
     monitor_timer.tick(
@@ -426,7 +426,7 @@ def wire_transcription_events(t, state, timer, monitor_timer):
     )
 
 
-# ─── Привязка событий: База знаний ───────────────────────────────────────────
+# привязка событий: База знаний 
 
 def wire_kb_events(kb, state, demo):
     # Полный список выходов при обновлении таблицы
@@ -497,7 +497,7 @@ def wire_kb_events(kb, state, demo):
     demo.load(fn=refresh_kb_table, outputs=table_outputs)
 
 
-# ─── Привязка событий: Чат ───────────────────────────────────────────────────
+# привязка событий: Чат 
 
 def wire_chat_events(chat, state):
     submit_outputs = [
@@ -542,7 +542,7 @@ def wire_chat_events(chat, state):
     )
 
 
-# ─── Сборка и запуск ─────────────────────────────────────────────────────────
+# сборка и запуск 
 
 start_workers()
 ensure_indexed()

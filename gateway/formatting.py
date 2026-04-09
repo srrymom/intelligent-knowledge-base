@@ -151,3 +151,17 @@ def render_asr_progress():
         '<style>@keyframes _asr-pulse{0%,100%{opacity:0.3}50%{opacity:1}}</style>'
         '</div>'
     )
+
+
+def render_waiting_progress(label="Ожидание GPU для LLM..."):
+    """Прогресс-бар ожидания очереди/переключения GPU."""
+    return (
+        '<div style="margin:4px 0 8px 0">'
+        f'<div style="font-size:12px;opacity:0.7;margin-bottom:5px">{label}</div>'
+        '<div style="background:rgba(128,128,128,0.15);border-radius:4px;height:6px;overflow:hidden">'
+        '<div style="background:#64748b;height:100%;width:100%;border-radius:4px;'
+        'animation:_wait-pulse 1.8s ease-in-out infinite"></div>'
+        '</div>'
+        '<style>@keyframes _wait-pulse{0%,100%{opacity:0.25}50%{opacity:0.9}}</style>'
+        '</div>'
+    )

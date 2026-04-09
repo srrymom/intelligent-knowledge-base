@@ -3,13 +3,18 @@
 gradio-env/
 __pycache__/
 *.pyc
+*.pyc.*
 *.pyo
 
 # Data (generated at runtime)
 data/
 
 # IDE / tools
-.claude/
+.claude/*
+!.claude/settings.json
+**/.claude/
+!/.claude/
+!/.claude/settings.json
 .gradio/
 .idea/
 .vscode/

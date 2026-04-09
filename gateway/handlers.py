@@ -8,18 +8,21 @@ import uuid
 import gradio as gr
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from shared.config import QUEUE_DIR, TRANSCRIPT_DIR, SUMMARY_DIR, LOCK_FILE, PROJECT_ROOT, KB_DIR, PROCESSED_DIR, SUMMARIZATION_METHODS
+from shared.config import (
+    QUEUE_DIR, TRANSCRIPT_DIR, SUMMARY_DIR, LOCK_FILE,
+    DEFAULT_SUMMARIZATION_METHOD, KB_DIR, PROJECT_ROOT, SUMMARIZATION_METHODS,
+)
 
 from formatting import (
     format_segments, is_valid_segment, render_topics, render_word_stats,
-    render_progress_bar, render_asr_progress,
+    render_progress_bar, render_asr_progress, render_waiting_progress,
 )
 
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "storage"))
 from kb import load_kb_entry
 
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "rag"))
-from engine import index_entry
+from engine import index_entry, is_indexed
 
 # Сколько значений возвращает poll_outputs (синхронизировать с app.py)
 _N = 8
@@ -29,10 +32,10 @@ def _no_update():
     return tuple(gr.update() for _ in range(_N))
 
 
-def _write_meta(file_uuid, report_mode, sum_method="Hierarchical"):
+def _write_meta(file_uuid, report_mode, sum_method=DEFAULT_SUMMARIZATION_METHOD):
     meta = {
         "structured": report_mode == "Структурированный отчёт",
-        "sum_method": sum_method if sum_method in SUMMARIZATION_METHODS else "Hierarchical",
+        "sum_method": sum_method if sum_method in SUMMARIZATION_METHODS else DEFAULT_SUMMARIZATION_METHOD,
     }
     path = os.path.join(TRANSCRIPT_DIR, f"{file_uuid}.meta")
     with open(path, "w", encoding="utf-8") as f:
@@ -71,35 +74,6 @@ def save_text(text_input, text_file, report_mode="Конспект", sum_method=
     return "Текст отправлен на обработку", file_uuid, "", gr.update(), ""
 
 
-def save_to_kb(file_uuid, segments, summary_text, title=None, topics=None, structured_report=""):
-    from datetime import datetime
-
-    if not title:
-        plain = " ".join(
-            seg["transcription"] for seg in segments
-            if is_valid_segment(seg["transcription"])
-        )
-        title = plain[:60].strip()
-        if len(plain) > 60:
-            title += "..."
-
-    entry = {
-        "id": file_uuid,
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "title": title,
-        "segments": segments,
-        "summary": summary_text,
-        "topics": topics or [],
-        "structured_report": structured_report,
-    }
-    path = os.path.join(KB_DIR, f"{file_uuid}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(entry, f, ensure_ascii=False, indent=2)
-
-    # добавить в RAG-индекс
-    index_entry(entry)
-
-
 def make_export_file(entry_id):
     """Генерирует Markdown-файл конспекта и возвращает путь к нему."""
     entry = load_kb_entry(entry_id)
@@ -130,7 +104,6 @@ def make_export_file(entry_id):
             lines.append(text + "  ")
 
     md_content = "\n".join(lines)
-
     tmp_dir = tempfile.mkdtemp()
     safe_title = "".join(c for c in title if c.isalnum() or c in " -_")[:40].strip() or "lecture"
     fname = os.path.join(tmp_dir, f"{safe_title}.md")
@@ -149,27 +122,29 @@ def poll_outputs(file_uuid, mode):
       4 topics_html      → t["topics_html"]
       5 stats_html       → t["stats_html"]
       6 export_file      → t["export_file"]
+      7 structured_report→ state["structured_report"]
+
+    Новая логика: проверяем сразу knowledge_base/UUID.json.
+    LLM worker пишет туда напрямую — никакого shutil.move в UI.
     """
     if not file_uuid:
         return _no_update()
 
-    transcript_path = os.path.join(TRANSCRIPT_DIR, f"{file_uuid}.json")
-    summary_path = os.path.join(SUMMARY_DIR, f"{file_uuid}.json")
+    kb_path = os.path.join(KB_DIR, f"{file_uuid}.json")
 
-    if os.path.exists(transcript_path) and os.path.exists(summary_path):
-        with open(transcript_path, "r", encoding="utf-8") as f:
-            segments = json.load(f)
-        with open(summary_path, "r", encoding="utf-8") as f:
-            summary_data = json.load(f)
+    # ── Результат готов ───────────────────────────────────────────────────────
+    if os.path.exists(kb_path):
+        with open(kb_path, "r", encoding="utf-8") as f:
+            entry = json.load(f)
 
-        shutil.move(transcript_path, os.path.join(PROCESSED_DIR, f"{file_uuid}_transcript.json"))
-        shutil.move(summary_path, os.path.join(PROCESSED_DIR, f"{file_uuid}_summary.json"))
+        # Индексируем в RAG если ещё не проиндексировано
+        if not is_indexed(file_uuid):
+            index_entry(entry)
 
-        summary_text = summary_data.get("summary", "")
-        structured_report = summary_data.get("structured_report", "")
-        title = summary_data.get("title")
-        topics = summary_data.get("topics", [])
-        save_to_kb(file_uuid, segments, summary_text, title, topics, structured_report)
+        segments = entry.get("segments", [])
+        summary_text = entry.get("summary", "")
+        structured_report = entry.get("structured_report", "")
+        topics = entry.get("topics", [])
 
         transcript_text = format_segments(segments, mode)
         topics_html = render_topics(topics)
@@ -177,8 +152,14 @@ def poll_outputs(file_uuid, mode):
         export_path = make_export_file(file_uuid)
         export_update = gr.update(value=export_path, visible=bool(export_path))
 
-        return transcript_text, summary_text, file_uuid, segments, topics_html, stats_html, export_update, structured_report
+        return (
+            transcript_text, summary_text,
+            file_uuid, segments,
+            topics_html, stats_html,
+            export_update, structured_report,
+        )
 
+    # ── LLM в процессе (progress файл) ───────────────────────────────────────
     progress_path = os.path.join(SUMMARY_DIR, f"{file_uuid}.progress")
     if os.path.exists(progress_path):
         try:
@@ -188,15 +169,21 @@ def poll_outputs(file_uuid, mode):
             cur = prog.get("current", 0)
             total = prog.get("total", 0)
             progress_html = render_progress_bar(stage, cur, total)
-            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), progress_html, gr.update(), gr.update()
+            return (gr.update(), gr.update(), gr.update(), gr.update(),
+                    gr.update(), progress_html, gr.update(), gr.update())
         except Exception:
             pass
 
+    # ── ASR в процессе ────────────────────────────────────────────────────────
+    transcript_path = os.path.join(TRANSCRIPT_DIR, f"{file_uuid}.json")
     if os.path.exists(LOCK_FILE):
-        return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), render_asr_progress(), gr.update(), gr.update()
+        return (gr.update(), gr.update(), gr.update(), gr.update(),
+                gr.update(), render_asr_progress(), gr.update(), gr.update())
 
-    if os.path.exists(transcript_path) and not os.path.exists(summary_path):
-        return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), render_asr_progress(), gr.update(), gr.update()
+    # ── Транскрипт готов, LLM ждёт очередь/GPU или начинает обработку ────────
+    if os.path.exists(transcript_path):
+        return (gr.update(), gr.update(), gr.update(), gr.update(),
+                gr.update(), render_waiting_progress(), gr.update(), gr.update())
 
     return _no_update()
 

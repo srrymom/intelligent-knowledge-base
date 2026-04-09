@@ -78,6 +78,15 @@ def remove_entry(entry_id):
         pass
 
 
+def is_indexed(entry_id: str) -> bool:
+    """Проверяет есть ли запись в ChromaDB."""
+    try:
+        results = collection.get(where={"meeting_id": entry_id}, limit=1)
+        return len(results["ids"]) > 0
+    except Exception:
+        return False
+
+
 def ensure_indexed():
     # доиндексировать записи KB, которых ещё нет в ChromaDB
     # собираем id, которые уже есть в индексе

@@ -6,6 +6,7 @@ import httpx
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from shared.config import LOCK_FILE, OLLAMA_URL, PROJECT_ROOT
+from shared.gpu_coord import clear_gpu_request, read_gpu_state, release_gpu
 
 # Popen-объекты воркеров — регистрируются из app.py при старте
 _workers: dict = {}
@@ -23,6 +24,8 @@ def get_worker_health() -> list[dict]:
         proc = info["proc"]
         alive = proc.poll() is None  # None = процесс жив
         if not alive:
+            release_gpu(key)
+            clear_gpu_request(key)
             # Перезапуск
             venv = "Scripts" if sys.platform == "win32" else "bin"
             python = os.path.join(PROJECT_ROOT, key, ".venv", venv, "python")
@@ -117,6 +120,7 @@ def format_status():
     cpu = get_cpu_stats()
     llm_status = get_ollama_status()
     asr = get_asr_status()
+    gpu_state = read_gpu_state()
     worker_health = get_worker_health()
 
     lines = []
@@ -144,6 +148,13 @@ def format_status():
         f"RAM: {cpu['ram_used_gb']} / {cpu['ram_total_gb']} ГБ ({cpu['ram_pct']}%)"
     )
 
+    lines.append("")
+
+    owner = gpu_state.get("owner") or "никто"
+    requests = [name for name, active in (gpu_state.get("requests") or {}).items() if active]
+    requested = ", ".join(requests) if requests else "нет"
+    lines.append(f"GPU owner: {owner}")
+    lines.append(f"GPU request: {requested}")
     lines.append("")
 
     if llm_status.get("loaded"):
