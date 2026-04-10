@@ -4,6 +4,7 @@ import time
 from typing import Callable, Optional
 
 import ollama
+from shared.ollama_runtime import is_ollama_available
 
 from shared.config import (
     DEFAULT_SUMMARIZATION_METHOD,
@@ -33,6 +34,11 @@ SYSTEM_PROMPT = (
     "Ты помощник для анализа транскриптов речи. "
     "Отвечай только на русском. Пиши кратко и по делу, без лишних слов."
 )
+
+
+def check_ollama_available() -> bool:
+    """Возвращает True если Ollama запущена и отвечает на запросы."""
+    return is_ollama_available()
 
 
 def get_chunk_word_limit():
@@ -67,12 +73,12 @@ def llm_call(user_content, num_gpu=None, _attempt=0):
         return response.message.content
     except Exception as e:
         err = str(e).lower()
-        if "cudamalloc" in err or "out of memory" in err:
+        if "cudamalloc" in err or "out of memory" in err or "runner process has terminated" in err:
             if num_gpu != 0:
                 print("GPU OOM — повтор на CPU (num_gpu=0)...")
                 return llm_call(user_content, num_gpu=0)
             raise
-        transient = ("connection", "eof", "reset", "timeout", "refused", "broken pipe")
+        transient = ("connect", "eof", "reset", "timeout", "refused", "broken pipe")
         if _attempt < 2 and any(k in err for k in transient):
             wait = 2 ** _attempt
             print(f"LLM connection error (попытка {_attempt + 1}): {e}. Повтор через {wait}с...")

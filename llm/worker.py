@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from llm.summarization import get_chunk_word_limit, make_chunks, normalize_method, summarize_transcript, unload_from_vram
+from llm.summarization import check_ollama_available, get_chunk_word_limit, make_chunks, normalize_method, summarize_transcript, unload_from_vram
 from shared.config import (
     DEFAULT_SUMMARIZATION_METHOD,
     KB_DIR,
@@ -170,6 +170,15 @@ def run_worker():
             time.sleep(2)
             continue
 
+        if not check_ollama_available():
+            write_event("LLM", "Ollama недоступна — ожидание 30 сек...")
+            clear_gpu_request("llm")
+            if llm_active:
+                _release_llm_resources()
+                llm_active = False
+            time.sleep(30)
+            continue
+
         request_gpu("llm")
         if not llm_active:
             state = read_gpu_state()
@@ -195,4 +204,11 @@ def run_worker():
 
 
 if __name__ == "__main__":
-    run_worker()
+    try:
+        run_worker()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        clear_gpu_request("llm")
+        release_gpu("llm")
+        write_event("LLM", "Воркер остановлен")

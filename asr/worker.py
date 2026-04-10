@@ -15,6 +15,7 @@ from shared.config import (
     LOCK_FILE,
     OLLAMA_URL,
     QUEUE_DIR,
+    SUMMARY_DIR,
     TRANSCRIPT_DIR,
 )
 from shared.gpu_coord import acquire_gpu, clear_gpu_request, read_gpu_state, release_gpu, request_gpu
@@ -25,6 +26,21 @@ if sys.platform == 'win32':
     os.add_dll_directory(FFMPEG_PATH)
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac"}
+
+
+def _asr_progress_path(file_uuid: str) -> str:
+    return os.path.join(SUMMARY_DIR, f"{file_uuid}.asr.progress")
+
+
+def _write_asr_progress(file_uuid: str, current: int, total: int) -> None:
+    with open(_asr_progress_path(file_uuid), "w", encoding="utf-8") as f:
+        json.dump({"stage": "asr", "current": current, "total": total}, f)
+
+
+def _remove_asr_progress(file_uuid: str) -> None:
+    path = _asr_progress_path(file_uuid)
+    if os.path.exists(path):
+        os.remove(path)
 
 
 def _unload_ollama():
@@ -52,12 +68,29 @@ def load_model(model_name=None):
     return gigaam.load_model(model_name or ASR_MODEL)
 
 
-def transcribe_file(model, audio_path: str) -> list:
-    segments = model.transcribe_longform(audio_path)
-    return [
-        s for s in segments
-        if s["transcription"].replace("⁇", "").replace(" ", "").strip()
-    ]
+def transcribe_file(model, audio_path: str, file_uuid: str | None = None) -> list:
+    from gigaam.preprocess import SAMPLE_RATE
+    from gigaam.vad_utils import segment_audio_file
+
+    segments, boundaries = segment_audio_file(audio_path, SAMPLE_RATE, device=model._device)
+    total = max(1, len(boundaries))
+    if file_uuid:
+        _write_asr_progress(file_uuid, 0, total)
+
+    transcribed_segments = []
+    for idx, (segment, segment_boundaries) in enumerate(zip(segments, boundaries), start=1):
+        wav = segment.to(model._device).unsqueeze(0).to(model._dtype)
+        length = torch.full([1], wav.shape[-1], device=model._device)
+        encoded, encoded_len = model.forward(wav, length)
+        result = model.decoding.decode(model.head, encoded, encoded_len)[0]
+        if result.replace("⁇", "").replace(" ", "").strip():
+            transcribed_segments.append(
+                {"transcription": result, "boundaries": segment_boundaries}
+            )
+        if file_uuid:
+            _write_asr_progress(file_uuid, idx, total)
+
+    return transcribed_segments
 
 
 def unload_model(model):
@@ -130,7 +163,7 @@ def run_worker():
             write_event("ASR", f"Транскрибирую: {fname}")
             t_start = time.time()
             try:
-                segments = transcribe_file(model, audio_path)
+                segments = transcribe_file(model, audio_path, file_uuid=file_uuid)
                 result = json.dumps(segments, ensure_ascii=False)
             except Exception as e:
                 write_event("ASR", f"Ошибка транскрипции: {e}")
@@ -138,6 +171,8 @@ def run_worker():
                     [{"transcription": f"Ошибка транскрипции: {e}", "boundaries": [0, 0]}],
                     ensure_ascii=False,
                 )
+            finally:
+                _remove_asr_progress(file_uuid)
 
             elapsed = time.time() - t_start
             result_path = os.path.join(TRANSCRIPT_DIR, f"{file_uuid}.json")
@@ -155,4 +190,13 @@ def run_worker():
 
 
 if __name__ == "__main__":
-    run_worker()
+    try:
+        run_worker()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        clear_gpu_request("asr")
+        release_gpu("asr")
+        if os.path.exists(LOCK_FILE):
+            os.remove(LOCK_FILE)
+        write_event("ASR", "Воркер остановлен")

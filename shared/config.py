@@ -14,6 +14,7 @@ TRANSCRIPT_DIR = os.path.join(DATA_DIR, "transcript")
 
 # Готовые резюме (.json): gateway/handlers.py забирает результат отсюда
 SUMMARY_DIR = os.path.join(DATA_DIR, "summary")
+EXPORT_DIR = os.path.join(DATA_DIR, "exports")
 
 # База знаний: полные записи (транскрипт, конспект, темы), каждая как UUID.json.
 # Используется UI для отображения и экспорта. ChromaDB хранит отдельно только эмбеддинги.
@@ -67,5 +68,5 @@ BENCHMARK_DIR = os.path.join(DATA_DIR, "benchmark")
 BENCHMARK_RESULTS_DIR = os.path.join(BENCHMARK_DIR, "results")
 
 # Создать рабочие директории если не существуют
-for _d in [QUEUE_DIR, TRANSCRIPT_DIR, SUMMARY_DIR, KB_DIR, RAG_DB_DIR, BENCHMARK_RESULTS_DIR, PROCESSED_DIR]:
+for _d in [QUEUE_DIR, TRANSCRIPT_DIR, SUMMARY_DIR, EXPORT_DIR, KB_DIR, RAG_DB_DIR, BENCHMARK_RESULTS_DIR, PROCESSED_DIR]:
     os.makedirs(_d, exist_ok=True)

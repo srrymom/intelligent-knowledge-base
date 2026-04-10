@@ -6,6 +6,7 @@ import gradio as gr
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from shared.config import PROJECT_ROOT, SUMMARIZATION_METHODS
+from shared.ollama_runtime import ensure_ollama_started
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "storage"))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "rag"))
 from kb import load_kb_list, load_kb_entry, delete_kb_entry, get_kb_stats, get_all_topics
@@ -26,6 +27,7 @@ from gradio import ChatMessage
 
 def start_workers():
     reset_gpu_state()
+    ensure_ollama_started()
     venv = "Scripts" if sys.platform == "win32" else "bin"
     python_name = "python.exe" if sys.platform == "win32" else "python"
     asr_python = os.path.join(PROJECT_ROOT, "asr", ".venv", venv, python_name)

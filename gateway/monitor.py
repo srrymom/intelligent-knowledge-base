@@ -5,7 +5,7 @@ import psutil
 import httpx
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from shared.config import LOCK_FILE, OLLAMA_URL, PROJECT_ROOT
+from shared.config import KB_DIR, LOCK_FILE, OLLAMA_URL, PROJECT_ROOT, QUEUE_DIR, TRANSCRIPT_DIR
 from shared.gpu_coord import clear_gpu_request, read_gpu_state, release_gpu
 
 # Popen-объекты воркеров — регистрируются из app.py при старте
@@ -115,11 +115,38 @@ def get_asr_status():
     return {"loaded": loaded, "process": proc}
 
 
+def get_queue_stats():
+    """Считает очереди задач для ASR и LLM."""
+    audio_ext = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac"}
+
+    try:
+        asr_pending = sum(
+            1 for fname in os.listdir(QUEUE_DIR)
+            if os.path.splitext(fname)[1].lower() in audio_ext
+        )
+    except Exception:
+        asr_pending = 0
+
+    llm_pending = 0
+    try:
+        for fname in os.listdir(TRANSCRIPT_DIR):
+            if not fname.endswith(".json"):
+                continue
+            file_uuid = os.path.splitext(fname)[0]
+            if not os.path.exists(os.path.join(KB_DIR, f"{file_uuid}.json")):
+                llm_pending += 1
+    except Exception:
+        llm_pending = 0
+
+    return {"asr_pending": asr_pending, "llm_pending": llm_pending, "total": asr_pending + llm_pending}
+
+
 def format_status():
     gpu = get_gpu_stats()
     cpu = get_cpu_stats()
     llm_status = get_ollama_status()
     asr = get_asr_status()
+    queue_stats = get_queue_stats()
     gpu_state = read_gpu_state()
     worker_health = get_worker_health()
 
@@ -148,6 +175,12 @@ def format_status():
         f"RAM: {cpu['ram_used_gb']} / {cpu['ram_total_gb']} ГБ ({cpu['ram_pct']}%)"
     )
 
+    lines.append("")
+
+    lines.append("Очередь задач:")
+    lines.append(f"  ASR (audio в queue): {queue_stats['asr_pending']}")
+    lines.append(f"  LLM (transcript в обработке): {queue_stats['llm_pending']}")
+    lines.append(f"  Всего ожидает: {queue_stats['total']}")
     lines.append("")
 
     owner = gpu_state.get("owner") or "никто"

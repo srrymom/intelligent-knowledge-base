@@ -1,33 +1,54 @@
-import os
-import sys
 import json
+import os
+import shutil
+import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from shared.config import KB_DIR, RAG_DB_DIR, LLM_MODEL, DATA_DIR
 
-import ollama
 import chromadb
+import ollama
 from sentence_transformers import SentenceTransformer
 
-# кеш модели хранится внутри проекта (data/models/)
 MODELS_CACHE = os.path.join(DATA_DIR, "models")
+EMBEDDER_MODEL_NAME = "intfloat/multilingual-e5-small"
+EMBEDDER_REPO_CACHE = os.path.join(
+    MODELS_CACHE, "models--intfloat--multilingual-e5-small"
+)
 os.makedirs(MODELS_CACHE, exist_ok=True)
 
-embedder = SentenceTransformer(
-    "intfloat/multilingual-e5-small",
-    cache_folder=MODELS_CACHE,
-)
+embedder = None
 
-# персистентное хранилище векторов
 chroma_client = chromadb.PersistentClient(path=RAG_DB_DIR)
 collection = chroma_client.get_or_create_collection("knowledge_base")
 
-CHUNK_SIZE = 300    # слов в чанке
-CHUNK_OVERLAP = 30  # слов перекрытия
+CHUNK_SIZE = 300
+CHUNK_OVERLAP = 30
+
+
+def _load_embedder():
+    return SentenceTransformer(
+        EMBEDDER_MODEL_NAME,
+        cache_folder=MODELS_CACHE,
+    )
+
+
+def _get_embedder():
+    global embedder
+    if embedder is not None:
+        return embedder
+    try:
+        embedder = _load_embedder()
+        return embedder
+    except OSError as e:
+        if os.path.exists(EMBEDDER_REPO_CACHE):
+            shutil.rmtree(EMBEDDER_REPO_CACHE, ignore_errors=True)
+            embedder = _load_embedder()
+            return embedder
+        raise RuntimeError(f"Не удалось загрузить embedding-модель: {e}") from e
 
 
 def _chunk_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
-    # разбить текст на чанки с перекрытием
     words = text.split()
     chunks = []
     step = chunk_size - overlap
@@ -39,39 +60,36 @@ def _chunk_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
 
 
 def index_entry(entry):
-    # добавить запись KB в векторный индекс
     entry_id = entry["id"]
 
-    # удаляем старые чанки этой записи (на случай переиндексации)
     try:
         collection.delete(where={"meeting_id": entry_id})
     except Exception:
         pass
 
-    # склеиваем текст из всех сегментов
-    full_text = " ".join(
-        seg["transcription"] for seg in entry.get("segments", [])
-    )
+    full_text = " ".join(seg["transcription"] for seg in entry.get("segments", []))
     if not full_text.strip():
         return
 
     chunks = _chunk_text(full_text)
-    embeddings = embedder.encode(chunks).tolist()
+    embeddings = _get_embedder().encode(chunks).tolist()
 
     collection.add(
         documents=chunks,
         embeddings=embeddings,
         ids=[f"{entry_id}_{i}" for i in range(len(chunks))],
-        metadatas=[{
-            "meeting_id": entry_id,
-            "title": entry.get("title", ""),
-            "created_at": entry.get("created_at", ""),
-        } for _ in chunks],
+        metadatas=[
+            {
+                "meeting_id": entry_id,
+                "title": entry.get("title", ""),
+                "created_at": entry.get("created_at", ""),
+            }
+            for _ in chunks
+        ],
     )
 
 
 def remove_entry(entry_id):
-    # удалить все чанки записи из индекса
     try:
         collection.delete(where={"meeting_id": entry_id})
     except Exception:
@@ -79,7 +97,6 @@ def remove_entry(entry_id):
 
 
 def is_indexed(entry_id: str) -> bool:
-    """Проверяет есть ли запись в ChromaDB."""
     try:
         results = collection.get(where={"meeting_id": entry_id}, limit=1)
         return len(results["ids"]) > 0
@@ -88,8 +105,12 @@ def is_indexed(entry_id: str) -> bool:
 
 
 def ensure_indexed():
-    # доиндексировать записи KB, которых ещё нет в ChromaDB
-    # собираем id, которые уже есть в индексе
+    try:
+        _get_embedder()
+    except Exception as e:
+        print(f"[RAG] embedding model unavailable: {e}")
+        return
+
     existing = set()
     try:
         all_meta = collection.get()["metadatas"]
@@ -98,7 +119,6 @@ def ensure_indexed():
     except Exception:
         pass
 
-    # проходим по файлам KB
     for fname in os.listdir(KB_DIR):
         if not fname.endswith(".json"):
             continue
@@ -124,16 +144,13 @@ SYSTEM_PROMPT = (
 
 
 def ask(question):
-    # поиск по KB + генерация ответа
-    q_vec = embedder.encode([question]).tolist()
+    q_vec = _get_embedder().encode([question]).tolist()
     results = collection.query(query_embeddings=q_vec, n_results=5)
 
     documents = results["documents"][0]
     metadatas = results["metadatas"][0]
-
     context = "\n\n".join(documents)
 
-    # уникальные источники (по id), сохраняя порядок
     seen = set()
     sources = []
     for m in metadatas:

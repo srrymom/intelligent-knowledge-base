@@ -175,6 +175,18 @@ def poll_outputs(file_uuid, mode):
             pass
 
     # ── ASR в процессе ────────────────────────────────────────────────────────
+    asr_progress_path = os.path.join(SUMMARY_DIR, f"{file_uuid}.asr.progress")
+    if os.path.exists(asr_progress_path):
+        try:
+            with open(asr_progress_path, "r", encoding="utf-8") as f:
+                prog = json.load(f)
+            cur = int(prog.get("current", 0))
+            total = int(prog.get("total", 0))
+            return (gr.update(), gr.update(), gr.update(), gr.update(),
+                    gr.update(), render_asr_progress(cur, total), gr.update(), gr.update())
+        except Exception:
+            pass
+
     transcript_path = os.path.join(TRANSCRIPT_DIR, f"{file_uuid}.json")
     if os.path.exists(LOCK_FILE):
         return (gr.update(), gr.update(), gr.update(), gr.update(),
