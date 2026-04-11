@@ -10,11 +10,7 @@ __pycache__/
 data/
 
 # IDE / tools
-.claude/*
-!.claude/settings.json
-**/.claude/
-!/.claude/
-!/.claude/settings.json
+.claude/
 .gradio/
 .idea/
 .vscode/
