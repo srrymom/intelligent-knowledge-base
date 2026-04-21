@@ -1,8 +1,16 @@
+"""
+Вся логика суммаризации текста через Ollama. Режет транскрипт на чанки, суммаризирует каждый, сливает по выбранной стратегии: Hierarchical (дерево слияний), Map-Reduce (плоское), Semantic-Cluster (KMeans + stitch).
+
+Sequential и Coarse-to-Fine -- заглушки, алиасы на Hierarchical. Semantic-Cluster требует sentence-transformers и sklearn.
+"""
+
 import json
+import math
 import re
 import time
 from typing import Callable, Optional
 
+import numpy as np
 import ollama
 from shared.ollama_runtime import is_ollama_available
 
@@ -223,6 +231,138 @@ def _coarse_to_fine_merge(chunk_summaries: list) -> str:
     return _hierarchical_merge(chunk_summaries)
 
 
+# ─── Semantic-Cluster ─────────────────────────────────────────────────────────
+
+_SC_EMBEDDER_MODEL = "intfloat/multilingual-e5-small"
+_SC_K_MIN, _SC_K_MAX = 2, 8
+
+
+def _truncate_to_words(text: str, max_words: int) -> str:
+    words = text.split()
+    return text if len(words) <= max_words else " ".join(words[:max_words]) + "..."
+
+
+def _is_bad_output(text: str) -> bool:
+    """Детектирует отказ LLM или петлю повторений."""
+    low = text.lower()
+    refusal = [r"\?\s*$", r"какую часть", r"если вы хотите",
+               r"мне нужно видеть", r"предоставьте", r"уточните",
+               r"не могу", r"хотите начать"]
+    if any(re.search(p, low) for p in refusal):
+        return True
+    sentences = [s.strip() for s in re.split(r"[.!?]\s+", text) if s.strip()]
+    if len(sentences) >= 2:
+        seen: set = set()
+        for s in sentences:
+            if s in seen:
+                return True
+            seen.add(s)
+    return False
+
+
+def _boundary_sentences(text: str) -> tuple:
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    if not sentences:
+        return text[:150], text[-150:]
+    return sentences[0], sentences[-1]
+
+
+def _make_transition(text_a: str, text_b: str) -> str:
+    """Генерирует 1-2 связующих предложения между двумя блоками."""
+    _, last_a = _boundary_sentences(text_a)
+    first_b, _ = _boundary_sentences(text_b)
+    prompt = (
+        "Напиши 1-2 связующих предложения-перехода между двумя частями лекции. "
+        "Только переход, без пересказа содержания. Начинай сразу с текста.\n\n"
+        f"Суть первого блока: {_truncate_to_words(text_a, 80)}\n"
+        f"Конец первого блока: {last_a}\n\n"
+        f"Суть второго блока: {_truncate_to_words(text_b, 80)}\n"
+        f"Начало второго блока: {first_b}"
+    )
+    result = clean_summary(llm_call(prompt))
+    return result if not _is_bad_output(result) else ""
+
+
+def _cluster_stitch_merge(sums: list) -> str:
+    """Stitch: оригинальные резюме сохраняются, между группами генерируются переходы."""
+    if len(sums) == 1:
+        return sums[0]
+
+    if len(sums) <= 3:
+        joined = "\n\n---\n\n".join(
+            f"Часть {j+1}:\n{_truncate_to_words(s, 350 // len(sums))}"
+            for j, s in enumerate(sums)
+        )
+        result = clean_summary(llm_call(
+            "Объедини эти фрагменты в связный абзац-конспект. "
+            "Начинай сразу с содержания, без вступлений:\n\n" + joined
+        ))
+        return result if not _is_bad_output(result) else " ".join(sums)
+
+    groups = [sums[i:i + 3] for i in range(0, len(sums), 3)]
+    group_texts = [" ".join(g) for g in groups]
+
+    parts = [group_texts[0]]
+    for i in range(1, len(groups)):
+        transition = _make_transition(group_texts[i - 1], group_texts[i])
+        if transition:
+            parts.append(f"*{transition}*")
+        parts.append(group_texts[i])
+
+    return "\n\n".join(parts)
+
+
+def _extract_cluster_topic(raw: str) -> str:
+    first_line = next((l.strip() for l in raw.splitlines() if l.strip()), raw.strip())
+    first_line = re.sub(
+        r"^[\*_]*\s*(тема|ключевая тема|раздел)\s*[\*_]*\s*[:：]\s*",
+        "", first_line, flags=re.IGNORECASE,
+    ).strip().strip("«»\"'.,;:!?")
+    words = first_line.split()
+    return " ".join(words[:5]) if len(words) > 6 else (first_line or "Тема")
+
+
+def _semantic_cluster_merge(chunk_summaries: list) -> str:
+    """Embed → KMeans → per-cluster stitch. Fallback на Hierarchical если нет зависимостей."""
+    try:
+        from sentence_transformers import SentenceTransformer
+        from sklearn.cluster import KMeans
+    except ImportError:
+        print("sentence-transformers/sklearn не установлены — fallback на Hierarchical")
+        return _hierarchical_merge(chunk_summaries)
+
+    N = len(chunk_summaries)
+    if N <= 3:
+        return _hierarchical_merge(chunk_summaries)
+
+    embedder = SentenceTransformer(_SC_EMBEDDER_MODEL)
+    vectors = embedder.encode(chunk_summaries)
+
+    k = max(_SC_K_MIN, min(_SC_K_MAX, round(math.sqrt(N))))
+    labels = KMeans(n_clusters=k, n_init=10, random_state=42).fit_predict(vectors)
+
+    clusters: dict = {}
+    for idx, (label, summary) in enumerate(zip(labels, chunk_summaries)):
+        clusters.setdefault(int(label), []).append((idx, summary))
+
+    ordered = sorted(clusters.items(), key=lambda item: np.mean([i for i, _ in item[1]]))
+    for _, members in ordered:
+        members.sort(key=lambda x: x[0])
+
+    sections = []
+    for _, members in ordered:
+        sums = [s for _, s in members]
+        topic_sample = "\n\n".join(_truncate_to_words(s, 100) for s in sums[:3])
+        topic_raw = llm_call(
+            "Напиши ТОЛЬКО 3-5 слов — название темы. "
+            "Никаких предложений, только слова:\n\n" + topic_sample
+        )
+        topic = _extract_cluster_topic(topic_raw)
+        sections.append(f"## {topic}\n\n{_cluster_stitch_merge(sums)}")
+
+    return "\n\n".join(sections)
+
+
 def _parse_sta_clusters(raw: str, n: int) -> list:
     """Парсит JSON-кластеры от LLM, robust fallback на единый кластер."""
     match = re.search(r"\[.*?\]", raw, re.DOTALL)
@@ -261,6 +401,8 @@ def dispatch_merge(method: str, chunk_summaries: list) -> str:
         return _hierarchical_merge(chunk_summaries)
     if method == "Map-Reduce":
         return _flat_merge(chunk_summaries)
+    if method == "Semantic-Cluster":
+        return _semantic_cluster_merge(chunk_summaries)
     return _flat_merge(chunk_summaries)
 
 

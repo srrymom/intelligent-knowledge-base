@@ -1,3 +1,7 @@
+"""
+Все пути и константы проекта: директории, модели, таймауты, URL. Создаёт рабочие директории при импорте -- просто import shared.config уже достаточно для инициализации.
+"""
+
 import os
 
 # Корень проекта: директория на уровень выше shared/
@@ -62,7 +66,7 @@ FFMPEG_PATH = os.environ.get("FFMPEG_PATH", r"D:\ffmpeg\bin")
 # Сложные/экспериментальные методы ниже в коде могут встречаться в старых meta/KB записях,
 # но новые задачи UI больше не предлагает.
 DEFAULT_SUMMARIZATION_METHOD = "Hierarchical"
-SUMMARIZATION_METHODS = ["Map-Reduce", "Hierarchical"]
+SUMMARIZATION_METHODS = ["Map-Reduce", "Hierarchical", "Semantic-Cluster"]
 
 BENCHMARK_DIR = os.path.join(DATA_DIR, "benchmark")
 BENCHMARK_RESULTS_DIR = os.path.join(BENCHMARK_DIR, "results")

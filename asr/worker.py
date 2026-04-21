@@ -1,3 +1,9 @@
+"""
+ASR-воркер. Смотрит папку queue/, транскрибирует аудиофайлы через GigaAM, кладёт результат в transcript/ как UUID.json с сегментами.
+
+GPU-координация через gpu_coord: уступает GPU LLM-воркеру если тот просит. Пишет .asr.progress-файл чтобы UI мог показывать прогресс-бар.
+"""
+
 import glob
 import json
 import os

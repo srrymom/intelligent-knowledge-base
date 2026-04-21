@@ -1,3 +1,9 @@
+"""
+Одноразовый скрипт для подготовки бенчмарк-данных. Скачивает 50 аудиофайлов из датасета Golos (sberdevices_golos_10h_crowd) и сохраняет WAV + samples.jsonl в data/benchmark/asr/.
+
+Запустить один раз перед eval_asr.py. Нужен env с datasets и soundfile.
+"""
+
 import io
 import json
 import os

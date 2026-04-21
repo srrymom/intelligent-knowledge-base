@@ -1,4 +1,11 @@
-﻿def fmt_time(seconds):
+"""
+HTML-рендеры для UI. Прогресс-бары ASR и LLM, темы-чипы, статистика слов, шапка базы знаний.
+
+Чистые функции: только данные на вход, HTML-строка на выход. Никакого состояния.
+"""
+
+
+def fmt_time(seconds):
     seconds = float(seconds)
     m = int(seconds // 60)
     s = int(seconds % 60)
@@ -6,7 +13,7 @@
 
 
 def is_valid_segment(text):
-    return bool(text.replace("вЃ‡", "").replace(" ", "").strip())
+    return bool(text.replace("⁇", "").replace(" ", "").strip())
 
 
 def _has_timestamps(segments):
@@ -14,14 +21,14 @@ def _has_timestamps(segments):
 
 
 def format_segments(segments, mode):
-    if mode == "РЎ РІСЂРµРјРµРЅРЅС‹РјРё РјРµС‚РєР°РјРё" and _has_timestamps(segments):
+    if mode == "С временными метками" and _has_timestamps(segments):
         lines = []
         for seg in segments:
             text = seg["transcription"]
             if not is_valid_segment(text):
                 continue
             start = fmt_time(seg["boundaries"][0])
-            lines.append(f"{start} вЂ” {text}")
+            lines.append(f"{start} — {text}")
         return "\n".join(lines)
     else:
         return " ".join(
@@ -30,7 +37,7 @@ def format_segments(segments, mode):
         )
 
 
-# Р¦РІРµС‚РѕРІС‹Рµ РїР°СЂС‹ bg/fg РґР»СЏ С‚РµРіРѕРІ С‚РµРј (С†РёРєР»РёС‡РµСЃРєРё)
+# Цветовые пары bg/fg для тегов тем (циклически)
 _TAG_COLORS = [
     ("#dbeafe", "#1d4ed8"),
     ("#dcfce7", "#15803d"),
@@ -43,7 +50,7 @@ _TAG_COLORS = [
 
 
 def render_topics(topics):
-    """Р РµРЅРґРµСЂРёС‚ СЃРїРёСЃРѕРє С‚РµРј РєР°Рє С†РІРµС‚РЅС‹Рµ С‡РёРїС‹ (HTML)."""
+    """Список тем как цветные чипы (HTML)."""
     if not topics:
         return ""
     chips = []
@@ -62,7 +69,7 @@ def render_topics(topics):
 
 
 def render_word_stats(segments):
-    """Р РµРЅРґРµСЂРёС‚ СЃС‚СЂРѕРєСѓ СЃС‚Р°С‚РёСЃС‚РёРєРё: СЃР»РѕРІР°, РґР»РёС‚РµР»СЊРЅРѕСЃС‚СЊ, РІСЂРµРјСЏ С‡С‚РµРЅРёСЏ (HTML)."""
+    """Строка статистики: слова, длительность, время чтения (HTML)."""
     words = sum(
         len(s["transcription"].split())
         for s in segments
@@ -81,57 +88,57 @@ def render_word_stats(segments):
         )
         if total_sec > 0:
             m, s = divmod(int(total_sec), 60)
-            extra = f' &nbsp;В·&nbsp; <b>{m}:{s:02d}</b> Р°СѓРґРёРѕ'
+            extra = f' &nbsp;·&nbsp; <b>{m}:{s:02d}</b> аудио'
 
     return (
         f'<p style="font-size:13px;margin:4px 0 8px 0;opacity:0.75">'
-        f'<b>{words:,}</b> СЃР»РѕРІ{extra} &nbsp;В·&nbsp; ~<b>{read_min}</b> РјРёРЅ С‡С‚РµРЅРёСЏ'
+        f'<b>{words:,}</b> слов{extra} &nbsp;·&nbsp; ~<b>{read_min}</b> мин чтения'
         f'</p>'
     )
 
 
 def render_kb_stats(count, total_words, total_audio_sec):
-    """Р РµРЅРґРµСЂРёС‚ С€Р°РїРєСѓ Р±Р°Р·С‹ Р·РЅР°РЅРёР№ СЃРѕ СЃС‚Р°С‚РёСЃС‚РёРєРѕР№ (HTML)."""
+    """Шапка базы знаний со статистикой (HTML)."""
     if count == 0:
-        return '<p style="font-size:13px;margin:0 0 10px 0;opacity:0.5">Р‘Р°Р·Р° Р·РЅР°РЅРёР№ РїСѓСЃС‚Р°</p>'
+        return '<p style="font-size:13px;margin:0 0 10px 0;opacity:0.5">База знаний пуста</p>'
 
-    words_fmt = f"{total_words:,}".replace(",", "\u202f")  # РЅРµСЂР°Р·СЂС‹РІРЅС‹Р№ РїСЂРѕР±РµР»
+    words_fmt = f"{total_words:,}".replace(",", "\u202f")  # неразрывный пробел
 
     audio_part = ""
     if total_audio_sec > 0:
         h = total_audio_sec // 3600
         m = (total_audio_sec % 3600) // 60
         if h > 0:
-            audio_part = f' &nbsp;В·&nbsp; <b>{h} С‡ {m} РјРёРЅ</b> Р°СѓРґРёРѕ'
+            audio_part = f' &nbsp;·&nbsp; <b>{h} ч {m} мин</b> аудио'
         else:
-            audio_part = f' &nbsp;В·&nbsp; <b>{m} РјРёРЅ</b> Р°СѓРґРёРѕ'
+            audio_part = f' &nbsp;·&nbsp; <b>{m} мин</b> аудио'
 
     return (
         f'<div style="border:1px solid rgba(128,128,128,0.2);border-radius:8px;'
         f'padding:8px 14px;margin-bottom:10px;font-size:13px;opacity:0.85">'
-        f'<b>{count}</b> {"Р»РµРєС†РёСЏ" if count == 1 else "Р»РµРєС†РёРё" if 2 <= count <= 4 else "Р»РµРєС†РёР№"}'
-        f' &nbsp;В·&nbsp; <b>{words_fmt}</b> СЃР»РѕРІ'
+        f'<b>{count}</b> {"лекция" if count == 1 else "лекции" if 2 <= count <= 4 else "лекций"}'
+        f' &nbsp;·&nbsp; <b>{words_fmt}</b> слов'
         f'{audio_part}'
         f'</div>'
     )
 
 
 def render_progress_bar(stage, cur, total):
-    """РџСЂРѕРіСЂРµСЃСЃ-Р±Р°СЂ LLM-СЃСѓРјРјР°СЂРёР·Р°С†РёРё (determinate)."""
+    """Прогресс-бар LLM-суммаризации (determinate)."""
     pct = round(cur / total * 100) if total else 0
     if stage == "chunk":
-        label = f"РЎСѓРјРјР°СЂРёР·Р°С†РёСЏ: С‡Р°СЃС‚СЊ {cur}/{max(total - 3, 1)}"
+        label = f"Суммаризация: часть {cur}/{max(total - 3, 1)}"
     elif stage == "merge":
-        label = "РћР±СЉРµРґРёРЅРµРЅРёРµ С‡Р°СЃС‚РµР№..."
+        label = "Объединение частей..."
     elif stage == "title":
-        label = "Р“РµРЅРµСЂР°С†РёСЏ Р·Р°РіРѕР»РѕРІРєР° Рё С‚РµРј..."
+        label = "Генерация заголовка и тем..."
     elif stage == "report":
-        label = "РЎС‚СЂСѓРєС‚СѓСЂРёСЂРѕРІР°РЅРёРµ РѕС‚С‡С‘С‚Р°..."
+        label = "Структурирование отчёта..."
     else:
-        label = "РћР±СЂР°Р±РѕС‚РєР°..."
+        label = "Обработка..."
     return (
         f'<div style="margin:4px 0 8px 0">'
-        f'<div style="font-size:12px;opacity:0.7;margin-bottom:5px">{label} вЂ” {pct}%</div>'
+        f'<div style="font-size:12px;opacity:0.7;margin-bottom:5px">{label} — {pct}%</div>'
         f'<div style="background:rgba(128,128,128,0.15);border-radius:4px;height:6px;overflow:hidden">'
         f'<div style="background:#3b82f6;height:100%;width:{pct}%;'
         f'transition:width 0.4s ease;border-radius:4px"></div>'
@@ -164,8 +171,10 @@ def render_asr_progress(current=None, total=None):
         '<style>@keyframes _asr-pulse{0%,100%{opacity:0.3}50%{opacity:1}}</style>'
         '</div>'
     )
-def render_waiting_progress(label="РћР¶РёРґР°РЅРёРµ GPU РґР»СЏ LLM..."):
-    """РџСЂРѕРіСЂРµСЃСЃ-Р±Р°СЂ РѕР¶РёРґР°РЅРёСЏ РѕС‡РµСЂРµРґРё/РїРµСЂРµРєР»СЋС‡РµРЅРёСЏ GPU."""
+
+
+def render_waiting_progress(label="Ожидание GPU для LLM..."):
+    """Прогресс-бар ожидания очереди/переключения GPU."""
     return (
         '<div style="margin:4px 0 8px 0">'
         f'<div style="font-size:12px;opacity:0.7;margin-bottom:5px">{label}</div>'
@@ -176,4 +185,3 @@ def render_waiting_progress(label="РћР¶РёРґР°РЅРёРµ GPU РґР»
         '<style>@keyframes _wait-pulse{0%,100%{opacity:0.25}50%{opacity:0.9}}</style>'
         '</div>'
     )
-

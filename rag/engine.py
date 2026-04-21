@@ -1,3 +1,9 @@
+"""
+RAG-движок: ChromaDB + multilingual-e5-small + Ollama. Индексирует лекции из KB по чанкам, отвечает на вопросы через семантический поиск + LLM.
+
+Embedder грузится лениво. При повреждённом кэше модели -- сносит папку и перекачивает.
+"""
+
 import json
 import os
 import shutil

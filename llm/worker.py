@@ -1,3 +1,9 @@
+"""
+LLM-воркер. Смотрит transcript/, для каждого JSON без пары в knowledge_base/ запускает суммаризацию и пишет готовую запись в KB.
+
+GPU-координация как у ASR-воркера: уступает GPU если ASR просит, выгружает Ollama из VRAM при простое.
+"""
+
 import glob
 import json
 import os

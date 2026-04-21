@@ -1,3 +1,7 @@
+"""
+Простой append-лог активности воркеров в activity.log. Ротация при превышении MAX_LINES строк. UI читает хвост через read_tail().
+"""
+
 import os
 from datetime import datetime
 from shared.config import ACTIVITY_LOG

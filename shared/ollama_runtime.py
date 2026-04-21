@@ -1,3 +1,7 @@
+"""
+Запуск и проверка Ollama. ensure_ollama_started() вызывается при старте UI: если сервис уже поднят -- ничего не делает, иначе запускает ollama serve и ждёт готовности.
+"""
+
 import os
 import shutil
 import subprocess
