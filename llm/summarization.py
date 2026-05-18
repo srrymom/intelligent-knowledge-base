@@ -10,7 +10,6 @@ import re
 import time
 from typing import Callable, Optional
 
-import numpy as np
 import ollama
 from shared.ollama_runtime import is_ollama_available
 
@@ -325,6 +324,7 @@ def _extract_cluster_topic(raw: str) -> str:
 def _semantic_cluster_merge(chunk_summaries: list) -> str:
     """Embed → KMeans → per-cluster stitch. Fallback на Hierarchical если нет зависимостей."""
     try:
+        import numpy as np
         from sentence_transformers import SentenceTransformer
         from sklearn.cluster import KMeans
     except ImportError:
