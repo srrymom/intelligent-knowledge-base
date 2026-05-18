@@ -10,6 +10,7 @@ __pycache__/
 data/
 
 # IDE / tools
+.env
 .claude/
 .gradio/
 .idea/
@@ -36,3 +37,6 @@ image-generator/*.png
 # Jupyter notebooks (may contain tokens/secrets)
 *.ipynb
 .ipynb_checkpoints/
+
+# Local research drafts / working notes, not part of the project
+.workbench/
