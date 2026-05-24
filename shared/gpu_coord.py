@@ -19,12 +19,17 @@ def read_gpu_state() -> dict:
     try:
         with open(GPU_STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
+        raw_requests = data.get("requests") or {}
+        requests = {
+            "asr": bool(raw_requests.get("asr", False)),
+            "llm": bool(raw_requests.get("llm", False)),
+        }
+        for name, active in raw_requests.items():
+            if name not in requests:
+                requests[str(name)] = bool(active)
         return {
             "owner": data.get("owner"),
-            "requests": {
-                "asr": bool((data.get("requests") or {}).get("asr", False)),
-                "llm": bool((data.get("requests") or {}).get("llm", False)),
-            },
+            "requests": requests,
             "updated_at": data.get("updated_at", 0),
         }
     except Exception:

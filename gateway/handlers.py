@@ -27,9 +27,6 @@ from formatting import (
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "storage"))
 from kb import load_kb_entry
 
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "rag"))
-from engine import index_entry, is_indexed
-
 # Сколько значений возвращает poll_outputs (синхронизировать с app.py)
 _N = 8
 
@@ -142,10 +139,6 @@ def poll_outputs(file_uuid, mode):
     if os.path.exists(kb_path):
         with open(kb_path, "r", encoding="utf-8") as f:
             entry = json.load(f)
-
-        # Индексируем в RAG если ещё не проиндексировано
-        if not is_indexed(file_uuid):
-            index_entry(entry)
 
         segments = entry.get("segments", [])
         summary_text = entry.get("summary", "")

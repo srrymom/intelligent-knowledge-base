@@ -16,6 +16,7 @@
 
 # Только для ASR-вenv
 datasets>=2.14
+numpy
 soundfile>=0.12
 
 # Опционально — для сравнения с Whisper

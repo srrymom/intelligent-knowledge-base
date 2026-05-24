@@ -2,7 +2,9 @@
 -e ./GigaAM
 torch
 torchaudio
+torchcodec
 onnxruntime
 soundfile
 librosa
 pyannote.audio
+numba

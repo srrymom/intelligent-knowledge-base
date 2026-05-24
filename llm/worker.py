@@ -30,8 +30,10 @@ AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".mp4", ".m
 
 def write_progress(file_uuid, stage, current=0, total=0):
     path = os.path.join(SUMMARY_DIR, f"{file_uuid}.progress")
-    with open(path, "w", encoding="utf-8") as f:
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump({"stage": stage, "current": current, "total": total}, f)
+    os.replace(tmp_path, path)
 
 
 def remove_progress(file_uuid):

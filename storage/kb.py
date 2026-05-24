@@ -9,8 +9,13 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from shared.config import KB_DIR, PROJECT_ROOT
 
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "rag"))
-from engine import remove_entry
+
+def _remove_from_rag_index(entry_id: str) -> None:
+    rag_dir = os.path.join(PROJECT_ROOT, "rag")
+    if rag_dir not in sys.path:
+        sys.path.insert(0, rag_dir)
+    from engine import remove_entry
+    remove_entry(entry_id)
 
 
 def _load_all_entries():
@@ -68,7 +73,7 @@ def delete_kb_entry(entry_id):
     if os.path.exists(path):
         os.remove(path)
     # удалить чанки из RAG-индекса
-    remove_entry(entry_id)
+    _remove_from_rag_index(entry_id)
 
 
 def get_kb_stats():

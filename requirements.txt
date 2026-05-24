@@ -2,5 +2,6 @@
 gradio>=5.0
 chromadb>=1.0
 sentence-transformers
+ollama
 httpx
 psutil

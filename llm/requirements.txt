@@ -1,2 +1,5 @@
 # LLM worker
 ollama
+sentence-transformers
+scikit-learn
+numpy

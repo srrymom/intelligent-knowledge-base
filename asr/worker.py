@@ -10,8 +10,6 @@ import os
 import sys
 import time
 
-import torch
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from shared.config import (
     ASR_IDLE_TIMEOUT_SEC,
@@ -75,6 +73,7 @@ def load_model(model_name=None):
 
 
 def transcribe_file(model, audio_path: str, file_uuid: str | None = None) -> list:
+    import torch
     from gigaam.preprocess import SAMPLE_RATE
     from gigaam.vad_utils import segment_audio_file
 
@@ -102,6 +101,7 @@ def transcribe_file(model, audio_path: str, file_uuid: str | None = None) -> lis
 def unload_model(model):
     """Выгружает модель из GPU-памяти максимально полно."""
     import gc
+    import torch
     del model
     gc.collect()
     if torch.cuda.is_available():

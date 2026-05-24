@@ -10,11 +10,12 @@ import shutil
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from shared.config import KB_DIR, RAG_DB_DIR, LLM_MODEL, DATA_DIR
+from shared.config import KB_DIR, RAG_DB_DIR, LLM_MODEL, DATA_DIR, OLLAMA_URL
+from shared.gpu_coord import acquire_gpu, clear_gpu_request, release_gpu, request_gpu
+from llm.summarization import unload_from_vram
 
 import chromadb
 import ollama
-from sentence_transformers import SentenceTransformer
 
 MODELS_CACHE = os.path.join(DATA_DIR, "models")
 EMBEDDER_MODEL_NAME = "intfloat/multilingual-e5-small"
@@ -30,13 +31,32 @@ collection = chroma_client.get_or_create_collection("knowledge_base")
 
 CHUNK_SIZE = 300
 CHUNK_OVERLAP = 30
+RAG_GPU_WAIT_TIMEOUT_SEC = int(os.environ.get("RAG_GPU_WAIT_TIMEOUT_SEC", "30"))
+OLLAMA_TIMEOUT_SEC = float(os.environ.get("OLLAMA_TIMEOUT_SEC", "120"))
 
 
 def _load_embedder():
+    from sentence_transformers import SentenceTransformer
+
     return SentenceTransformer(
         EMBEDDER_MODEL_NAME,
         cache_folder=MODELS_CACHE,
+        device="cpu",
     )
+
+
+def _acquire_rag_gpu_slot(timeout_sec: int = RAG_GPU_WAIT_TIMEOUT_SEC) -> None:
+    import time
+
+    request_gpu("rag")
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        if acquire_gpu("rag"):
+            clear_gpu_request("rag")
+            return
+        time.sleep(0.5)
+    clear_gpu_request("rag")
+    raise RuntimeError("GPU занята ASR/LLM, RAG-запрос не получил слот")
 
 
 def _get_embedder():
@@ -111,6 +131,11 @@ def is_indexed(entry_id: str) -> bool:
 
 
 def ensure_indexed():
+    kb_files = [fname for fname in os.listdir(KB_DIR) if fname.endswith(".json")]
+    if not kb_files:
+        print("[RAG] база знаний пуста, индексировать нечего")
+        return
+
     try:
         _get_embedder()
     except Exception as e:
@@ -125,9 +150,7 @@ def ensure_indexed():
     except Exception:
         pass
 
-    for fname in os.listdir(KB_DIR):
-        if not fname.endswith(".json"):
-            continue
+    for fname in kb_files:
         entry_id = fname[:-5]
         if entry_id in existing:
             continue
@@ -150,6 +173,12 @@ SYSTEM_PROMPT = (
 
 
 def ask(question):
+    if collection.count() == 0:
+        return {
+            "answer": "База знаний пока пуста или ещё не проиндексирована.",
+            "sources": [],
+        }
+
     q_vec = _get_embedder().encode([question]).tolist()
     results = collection.query(query_embeddings=q_vec, n_results=5)
 
@@ -171,14 +200,21 @@ def ask(question):
         f"Вопрос: {question}\nОтвет:"
     )
 
-    response = ollama.chat(
-        model=LLM_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        options={"temperature": 0.1},
-    )
-    answer = response.message.content
+    _acquire_rag_gpu_slot()
+    try:
+        client = ollama.Client(host=OLLAMA_URL, timeout=OLLAMA_TIMEOUT_SEC)
+        response = client.chat(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            options={"temperature": 0.1},
+            keep_alive=0,
+        )
+        answer = response.message.content
+    finally:
+        unload_from_vram()
+        release_gpu("rag")
 
     return {"answer": answer, "sources": sources}

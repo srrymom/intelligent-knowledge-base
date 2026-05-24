@@ -5,6 +5,21 @@
 import os
 import subprocess
 import sys
+
+
+def _ensure_localhost_bypasses_proxy():
+    local_hosts = ["localhost", "127.0.0.1", "::1"]
+    for env_name in ("NO_PROXY", "no_proxy"):
+        current = os.environ.get(env_name, "")
+        parts = [p.strip() for p in current.split(",") if p.strip()]
+        for host in local_hosts:
+            if host not in parts:
+                parts.append(host)
+        os.environ[env_name] = ",".join(parts)
+
+
+_ensure_localhost_bypasses_proxy()
+
 import gradio as gr
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -12,9 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from shared.config import PROJECT_ROOT, SUMMARIZATION_METHODS
 from shared.ollama_runtime import ensure_ollama_started
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "storage"))
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "rag"))
 from kb import load_kb_list, load_kb_entry, delete_kb_entry, get_kb_stats, get_all_topics
-from engine import ask as rag_ask, ensure_indexed
 
 from monitor import format_status, register_workers
 from shared.gpu_coord import reset_gpu_state
@@ -27,6 +40,14 @@ from formatting import (
 )
 from handlers import save_media, save_text, poll_outputs, reformat, make_export_file
 from gradio import ChatMessage
+
+
+def _load_rag_engine():
+    rag_dir = os.path.join(PROJECT_ROOT, "rag")
+    if rag_dir not in sys.path:
+        sys.path.insert(0, rag_dir)
+    from engine import ask as rag_ask, ensure_indexed
+    return rag_ask, ensure_indexed
 
 
 def start_workers():
@@ -229,18 +250,39 @@ def build_kb_tab():
 
 # вкладка чат
 def chat_respond(message, history):
-    result = rag_ask(message)
+    if not (message or "").strip():
+        return [], [], []
+
+    kb_count, _, _ = get_kb_stats()
+    if kb_count == 0:
+        return (
+            [ChatMessage(content="База знаний пока пуста. Сначала обработайте или добавьте лекцию.")],
+            [],
+            [],
+        )
+
+    rag_ask, ensure_indexed = _load_rag_engine()
+    try:
+        ensure_indexed()
+        result = rag_ask(message)
+    except Exception as e:
+        return (
+            [ChatMessage(content=f"Не удалось выполнить RAG-запрос: {e}")],
+            [],
+            [],
+        )
     answer = result["answer"]
     sources = result["sources"]
 
-    sources_text = "\n".join(f"- {s['title']}" for s in sources)
-    new_messages = [
-        ChatMessage(content=answer),
-        ChatMessage(
-            content=sources_text,
-            metadata={"title": "Источники", "status": "done"},
-        ),
-    ]
+    new_messages = [ChatMessage(content=answer)]
+    if sources:
+        sources_text = "\n".join(f"- {s['title']}" for s in sources)
+        new_messages.append(
+            ChatMessage(
+                content=sources_text,
+                metadata={"title": "Источники", "status": "done"},
+            )
+        )
     choices = [s["title"] for s in sources]
     ids = [s["id"] for s in sources]
     return new_messages, choices, ids
@@ -373,10 +415,14 @@ def wire_transcription_events(t, state, timer, monitor_timer):
     monitor_timer.tick(
         fn=lambda: (format_status(), read_tail(10)),
         outputs=[t["monitor_box"], t["activity_log_box"]],
+        queue=False,
+        show_progress="hidden",
     )
     t["refresh_btn"].click(
         fn=lambda: (format_status(), read_tail(10)),
         outputs=[t["monitor_box"], t["activity_log_box"]],
+        queue=False,
+        show_progress="hidden",
     )
 
     # Выходы кнопок «Отправить» — сбрасываем summary + stats при новой отправке
@@ -386,12 +432,26 @@ def wire_transcription_events(t, state, timer, monitor_timer):
         t["stats_html"],
     ]
 
-    t["audio_btn"].click(fn=save_media, inputs=[t["audio_input"], t["report_mode"], t["sum_method"]], outputs=send_outputs)
-    t["video_btn"].click(fn=save_media, inputs=[t["video_input"], t["report_mode"], t["sum_method"]], outputs=send_outputs)
+    t["audio_btn"].click(
+        fn=save_media,
+        inputs=[t["audio_input"], t["report_mode"], t["sum_method"]],
+        outputs=send_outputs,
+        queue=False,
+        show_progress="hidden",
+    )
+    t["video_btn"].click(
+        fn=save_media,
+        inputs=[t["video_input"], t["report_mode"], t["sum_method"]],
+        outputs=send_outputs,
+        queue=False,
+        show_progress="hidden",
+    )
     t["text_btn"].click(
         fn=save_text,
         inputs=[t["text_input"], t["text_file"], t["report_mode"], t["sum_method"]],
         outputs=send_outputs,
+        queue=False,
+        show_progress="hidden",
     )
 
     # Поллинг: 8 выходов (см. handlers.py _N = 8)
@@ -404,12 +464,16 @@ def wire_transcription_events(t, state, timer, monitor_timer):
             t["topics_html"], t["stats_html"], t["export_file"],
             state["structured_report"],
         ],
+        queue=False,
+        show_progress="hidden",
     )
 
     t["mode"].change(
         fn=reformat,
         inputs=[state["cached_segments"], t["mode"]],
         outputs=t["output"],
+        queue=False,
+        show_progress="hidden",
     )
 
     def on_report_mode_change(mode, structured, current_uuid):
@@ -429,6 +493,8 @@ def wire_transcription_events(t, state, timer, monitor_timer):
         fn=on_report_mode_change,
         inputs=[t["report_mode"], state["structured_report"], state["current_uuid"]],
         outputs=[t["summary_output"], t["summary_report_md"]],
+        queue=False,
+        show_progress="hidden",
     )
 
 
@@ -444,21 +510,35 @@ def wire_kb_events(kb, state, demo):
         kb["kb_topic_filter"],
     ]
 
-    kb["kb_refresh_btn"].click(fn=refresh_kb_table, outputs=table_outputs)
+    kb["kb_refresh_btn"].click(
+        fn=refresh_kb_table,
+        outputs=table_outputs,
+        queue=False,
+        show_progress="hidden",
+    )
 
     # Автообновление при переключении на вкладку
-    kb["kb_tab"].select(fn=refresh_kb_table, outputs=table_outputs)
+    kb["kb_tab"].select(
+        fn=refresh_kb_table,
+        outputs=table_outputs,
+        queue=False,
+        show_progress="hidden",
+    )
 
     # Поиск + фильтр по теме — обновляют только таблицу и uuid-список
     kb["kb_search"].change(
         fn=filter_kb_table,
         inputs=[kb["kb_search"], kb["kb_topic_filter"]],
         outputs=[kb["kb_table"], state["kb_uuid_list"]],
+        queue=False,
+        show_progress="hidden",
     )
     kb["kb_topic_filter"].change(
         fn=filter_kb_table,
         inputs=[kb["kb_search"], kb["kb_topic_filter"]],
         outputs=[kb["kb_table"], state["kb_uuid_list"]],
+        queue=False,
+        show_progress="hidden",
     )
 
     kb["kb_table"].select(
@@ -470,6 +550,8 @@ def wire_kb_events(kb, state, demo):
             kb["kb_topics_html"], kb["kb_export_file"],
             state["kb_structured_report"],
         ],
+        queue=False,
+        show_progress="hidden",
     )
 
     def on_kb_report_mode(mode, structured, selected_id):
@@ -486,21 +568,32 @@ def wire_kb_events(kb, state, demo):
         fn=on_kb_report_mode,
         inputs=[kb["kb_report_mode"], state["kb_structured_report"], state["kb_selected_id"]],
         outputs=[kb["kb_summary"], kb["kb_report_md"]],
+        queue=False,
+        show_progress="hidden",
     )
 
     kb["kb_mode"].change(
         fn=on_kb_mode_change,
         inputs=[state["kb_selected_segments"], kb["kb_mode"]],
         outputs=kb["kb_transcript"],
+        queue=False,
+        show_progress="hidden",
     )
 
     kb["kb_delete_btn"].click(
         fn=on_kb_delete,
         inputs=[state["kb_selected_id"]],
         outputs=table_outputs,
+        queue=False,
+        show_progress="hidden",
     )
 
-    demo.load(fn=refresh_kb_table, outputs=table_outputs)
+    demo.load(
+        fn=refresh_kb_table,
+        outputs=table_outputs,
+        queue=False,
+        show_progress="hidden",
+    )
 
 
 # привязка событий: Чат 
@@ -518,6 +611,7 @@ def wire_chat_events(chat, state):
     ]
 
     def on_submit(message, history):
+        history = history or []
         history.append(ChatMessage(role="user", content=message))
         new_messages, choices, ids = chat_respond(message, history)
         for msg in new_messages:
@@ -534,24 +628,29 @@ def wire_chat_events(chat, state):
         fn=on_submit,
         inputs=[chat["chat_input"], chat["chatbot"]],
         outputs=submit_outputs,
+        concurrency_limit=1,
+        concurrency_id="rag_chat",
     )
     chat["chat_input"].submit(
         fn=on_submit,
         inputs=[chat["chat_input"], chat["chatbot"]],
         outputs=submit_outputs,
+        concurrency_limit=1,
+        concurrency_id="rag_chat",
     )
 
     chat["source_radio"].change(
         fn=on_source_select,
         inputs=[chat["source_radio"], state["chat_source_ids"], state["chat_source_titles"]],
         outputs=[chat["src_title"], chat["src_transcript"], chat["src_summary"]],
+        queue=False,
+        show_progress="hidden",
     )
 
 
 # сборка и запуск 
 
 start_workers()
-ensure_indexed()
 
 with gr.Blocks() as demo:
     state = {

@@ -6,6 +6,7 @@ Sequential и Coarse-to-Fine -- заглушки, алиасы на Hierarchical
 
 import json
 import math
+import os
 import re
 import time
 from typing import Callable, Optional
@@ -31,6 +32,7 @@ _FLAT_MAX_CHUNKS = 4
 
 # Дефолтный лимит слов на чанк если Ollama недоступна
 CHUNK_WORD_LIMIT_DEFAULT = 500
+OLLAMA_TIMEOUT_SEC = float(os.environ.get("OLLAMA_TIMEOUT_SEC", "120"))
 LEGACY_METHOD_ALIASES = {
     "Sequential": "Hierarchical",
     "Coarse-to-Fine": "Hierarchical",
@@ -69,7 +71,8 @@ def llm_call(user_content, num_gpu=None, _attempt=0):
     if num_gpu is not None:
         opts["num_gpu"] = num_gpu
     try:
-        response = ollama.chat(
+        client = ollama.Client(host=OLLAMA_URL, timeout=OLLAMA_TIMEOUT_SEC)
+        response = client.chat(
             model=LLM_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -335,7 +338,7 @@ def _semantic_cluster_merge(chunk_summaries: list) -> str:
     if N <= 3:
         return _hierarchical_merge(chunk_summaries)
 
-    embedder = SentenceTransformer(_SC_EMBEDDER_MODEL)
+    embedder = SentenceTransformer(_SC_EMBEDDER_MODEL, device="cpu")
     vectors = embedder.encode(chunk_summaries)
 
     k = max(_SC_K_MIN, min(_SC_K_MAX, round(math.sqrt(N))))
