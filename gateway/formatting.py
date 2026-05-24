@@ -39,13 +39,13 @@ def format_segments(segments, mode):
 
 # Цветовые пары bg/fg для тегов тем (циклически)
 _TAG_COLORS = [
-    ("#dbeafe", "#1d4ed8"),
-    ("#dcfce7", "#15803d"),
-    ("#fef9c3", "#854d0e"),
-    ("#fce7f3", "#9d174d"),
-    ("#ede9fe", "#6d28d9"),
-    ("#ffedd5", "#c2410c"),
-    ("#f1f5f9", "#475569"),
+    "#1d4ed8",
+    "#15803d",
+    "#854d0e",
+    "#9d174d",
+    "#6d28d9",
+    "#c2410c",
+    "#475569",
 ]
 
 
@@ -55,14 +55,12 @@ def render_topics(topics):
         return ""
     chips = []
     for i, topic in enumerate(topics):
-        bg, fg = _TAG_COLORS[i % len(_TAG_COLORS)]
+        color = _TAG_COLORS[i % len(_TAG_COLORS)]
         chips.append(
-            f'<span style="background:{bg};color:{fg};padding:3px 12px;'
-            f'border-radius:999px;font-size:13px;font-weight:500;'
-            f'white-space:nowrap;display:inline-block">{topic}</span>'
+            f'<span class="topic-chip" style="--topic-color:{color}">{topic}</span>'
         )
     return (
-        '<div style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 2px 0">'
+        '<div class="topic-chip-list">'
         + "".join(chips)
         + "</div>"
     )
@@ -100,7 +98,7 @@ def render_word_stats(segments):
 def render_kb_stats(count, total_words, total_audio_sec):
     """Шапка базы знаний со статистикой (HTML)."""
     if count == 0:
-        return '<p style="font-size:13px;margin:0 0 10px 0;opacity:0.5">База знаний пуста</p>'
+        return ""
 
     words_fmt = f"{total_words:,}".replace(",", "\u202f")  # неразрывный пробел
 
