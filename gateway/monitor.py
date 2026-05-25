@@ -31,6 +31,7 @@ _WORKER_PID_FILES = {
     "asr": ASR_WORKER_PID_FILE,
     "llm": LLM_WORKER_PID_FILE,
 }
+_shutdown_in_progress = False
 
 
 def register_workers(asr_proc, llm_proc):
@@ -43,8 +44,16 @@ def register_workers(asr_proc, llm_proc):
 def get_worker_health() -> list[dict]:
     """Проверяет состояние каждого воркера. При падении — перезапускает."""
     results = []
+    if _shutdown_in_progress:
+        for _, info in _workers.items():
+            results.append({"label": info["label"], "alive": False, "status": "остановка"})
+        return results
+
     for key, info in _workers.items():
         proc = info["proc"]
+        if proc is None:
+            results.append({"label": info["label"], "alive": False, "status": "остановлен"})
+            continue
         alive = proc.poll() is None  # None = процесс жив
         if not alive:
             singleton_pid = get_live_singleton_pid(_WORKER_PID_FILES[key])
@@ -60,7 +69,8 @@ def get_worker_health() -> list[dict]:
             clear_gpu_request(key)
             # Перезапуск
             venv = "Scripts" if sys.platform == "win32" else "bin"
-            python = os.path.join(PROJECT_ROOT, key, ".venv", venv, "python")
+            python_name = "python.exe" if sys.platform == "win32" else "python"
+            python = os.path.join(PROJECT_ROOT, key, ".venv", venv, python_name)
             script = os.path.join(PROJECT_ROOT, info["script"])
             new_proc = subprocess.Popen([python, script])
             info["proc"] = new_proc
@@ -70,6 +80,76 @@ def get_worker_health() -> list[dict]:
             status = "работает"
         results.append({"label": info["label"], "alive": alive, "status": status})
     return results
+
+
+def _terminate_process_tree(pid: int, timeout_sec: float = 6.0) -> bool:
+    """Завершает процесс и всех его потомков."""
+    try:
+        root = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.AccessDenied, psutil.Error):
+        return False
+
+    procs = []
+    try:
+        procs.extend(root.children(recursive=True))
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+        pass
+    procs.append(root)
+
+    for proc in procs:
+        try:
+            proc.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+            pass
+
+    _, alive = psutil.wait_procs(procs, timeout=max(0.0, timeout_sec))
+    for proc in alive:
+        try:
+            proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+            pass
+    if alive:
+        psutil.wait_procs(alive, timeout=2)
+    return True
+
+
+def shutdown_workers(timeout_sec: float = 6.0):
+    """Останавливает воркеры, которые были запущены gateway."""
+    global _shutdown_in_progress
+    if _shutdown_in_progress:
+        return
+    _shutdown_in_progress = True
+    write_event("UI", "DIAG WORKER_SHUTDOWN_BEGIN")
+
+    for key, info in list(_workers.items()):
+        label = info["label"]
+        pid_candidates = set()
+
+        proc = info.get("proc")
+        if proc is not None:
+            try:
+                pid_candidates.add(int(proc.pid))
+            except Exception:
+                pass
+
+        singleton_pid = get_live_singleton_pid(_WORKER_PID_FILES[key])
+        if singleton_pid:
+            pid_candidates.add(int(singleton_pid))
+
+        for pid in sorted(pid_candidates):
+            stopped = _terminate_process_tree(pid, timeout_sec=timeout_sec)
+            write_event(
+                "UI",
+                f"DIAG WORKER_SHUTDOWN key={key} label={label} pid={pid} stopped={int(stopped)}",
+            )
+
+        release_gpu(key)
+        clear_gpu_request(key)
+        info["proc"] = None
+
+    write_event("UI", "DIAG WORKER_SHUTDOWN_DONE")
 
 
 def get_gpu_stats():

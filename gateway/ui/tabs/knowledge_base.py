@@ -12,12 +12,13 @@ def build_kb_tab():
             with gr.Column(scale=0, min_width=56, visible=False, elem_classes=["kb-sidebar-rail"]) as kb_filter_rail:
                 kb_filter_expand_btn = gr.Button("Поиск", size="sm", elem_classes=["kb-sidebar-rail-btn"])
 
-            with gr.Column(scale=1, min_width=300, elem_classes=["kb-filter-panel"]) as kb_filter_panel:
+            with gr.Column(scale=1, min_width=300, elem_classes=["kb-filter-panel", "kb-panel"]) as kb_filter_panel:
                 with gr.Group(elem_classes=["kb-panel", "kb-sidebar-panel"]):
                     with gr.Row(elem_classes=["kb-sidebar-head"]):
-                        gr.Markdown("**Поиск и выбор**", elem_classes=["kb-sidebar-title"])
                         kb_filter_collapse_btn = gr.Button("‹", size="sm", elem_classes=["kb-sidebar-toggle"])
-                    kb_stats_html = gr.HTML()
+                        with gr.Column(scale=1, min_width=0, elem_classes=["kb-sidebar-meta"]):
+                            gr.Markdown("**Поиск и выбор**", elem_classes=["kb-sidebar-title"])
+                            kb_stats_html = gr.HTML(elem_classes=["kb-sidebar-stats"])
                     kb_empty_html = gr.HTML(KB_EMPTY_HTML, visible=False)
                     kb_search = gr.Textbox(
                         placeholder="Поиск по названию...",
@@ -64,7 +65,7 @@ def build_kb_tab():
 
             # — правая колонка: детали записи.
             with gr.Column(scale=4, elem_classes=["kb-panel", "kb-reader-panel"]):
-                with gr.Group( elem_classes=["kb-reader-group"]) as kb_reader_content:
+                with gr.Group( elem_classes=["kb-reader-group",]) as kb_reader_content:
                     kb_report_mode = gr.Radio(
                         ["Конспект", "Структурированный отчёт"],
                         value="Конспект",
@@ -82,6 +83,13 @@ def build_kb_tab():
                         elem_classes=["summary-text"],
                     )
                     kb_report_md = gr.Markdown(visible=False)
+                   
+                    kb_topics_html = gr.HTML()
+                    kb_export_file = gr.File(
+                        label="Скачать конспект (.md)",
+                        visible=False,
+                        interactive=False,
+                    )
                     with gr.Accordion("Транскрипция", open=False, elem_classes=["kb-transcript-box"]):
                         kb_mode = gr.Radio(
                             choices=["С временными метками", "Сплошной текст"],
@@ -94,12 +102,6 @@ def build_kb_tab():
                             interactive=False,
                             elem_classes=["reader-text"],
                         )
-                    kb_topics_html = gr.HTML()
-                    kb_export_file = gr.File(
-                        label="Скачать конспект (.md)",
-                        visible=False,
-                        interactive=False,
-                    )
 
     return {
         "kb_tab": kb_tab,

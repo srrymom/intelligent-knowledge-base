@@ -31,8 +31,9 @@ def wire_transcription_events(t, state, timer, monitor_timer):
         message, task_id = result[0], result[1]
         return create_message(message, task_id), task_id, refresh_task_ui(), format_activity_log()
 
-    def create_audio_task(audio_path, report_mode, sum_method):
-        return _after_create(save_media(audio_path, report_mode, sum_method, source_type="audio"))
+    def create_audio_task(audio_path, microphone_path, report_mode, sum_method):
+        audio_source = audio_path or microphone_path
+        return _after_create(save_media(audio_source, report_mode, sum_method, source_type="audio"))
 
     def create_video_task(video_path, report_mode, sum_method):
         return _after_create(save_media(video_path, report_mode, sum_method, source_type="video"))
@@ -42,7 +43,7 @@ def wire_transcription_events(t, state, timer, monitor_timer):
 
     t["audio_btn"].click(
         fn=create_audio_task,
-        inputs=[t["audio_input"], t["report_mode"], t["sum_method"]],
+        inputs=[t["audio_input"], t["microphone_input"], t["report_mode"], t["sum_method"]],
         outputs=task_outputs,
         queue=False,
         show_progress="hidden",

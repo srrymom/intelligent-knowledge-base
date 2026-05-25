@@ -6,7 +6,9 @@ GPU-координация через gpu_coord: уступает GPU LLM-вор
 
 import glob
 import json
+import math
 import os
+import re
 import sys
 import time
 
@@ -33,6 +35,9 @@ if sys.platform == 'win32':
     os.add_dll_directory(FFMPEG_PATH)
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac"}
+ASR_MAX_SUBCHUNK_SEC = 15.0
+ASR_COVERAGE_WARN_GAP_PCT = 10.0
+UNKNOWN_ASR_CHARS = {"⁇", "�"}
 
 
 def _process_diag() -> str:
@@ -55,6 +60,19 @@ def _claim_audio_file(audio_path: str) -> str | None:
         return None
     write_event("ASR", f"DIAG CLAIM_OK file={fname} claimed_path={claimed_path} {_process_diag()}")
     return claimed_path
+
+
+def _claimed_processing_files() -> list[tuple[str, str]]:
+    claimed = []
+    pattern = os.path.join(QUEUE_PROCESSING_DIR, "*")
+    for claimed_path in glob.glob(pattern):
+        if os.path.splitext(claimed_path)[1].lower() not in AUDIO_EXTENSIONS:
+            continue
+        claimed_name = os.path.basename(claimed_path)
+        stem, ext = os.path.splitext(claimed_name)
+        original_stem = stem.rsplit(".", 1)[0]
+        claimed.append((f"{original_stem}{ext}", claimed_path))
+    return claimed
 
 
 def _asr_progress_path(file_uuid: str) -> str:
@@ -97,28 +115,165 @@ def load_model(model_name=None):
     return gigaam.load_model(model_name or ASR_MODEL)
 
 
+def _format_asr_time(seconds: float) -> str:
+    total_ms = int(round(max(0.0, seconds) * 1000))
+    minutes, rem_ms = divmod(total_ms, 60_000)
+    sec, ms = divmod(rem_ms, 1000)
+    return f"{minutes:02d}:{sec:02d}.{ms:03d}"
+
+
+def _clean_asr_text(text: str) -> str:
+    cleaned = text or ""
+    for ch in UNKNOWN_ASR_CHARS:
+        cleaned = cleaned.replace(ch, "")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _assess_asr_text(text: str, duration: float) -> tuple[bool, str, int, str]:
+    unknown_count = sum((text or "").count(ch) for ch in UNKNOWN_ASR_CHARS)
+    cleaned = _clean_asr_text(text)
+    compact = re.sub(r"\s+", "", cleaned)
+    word_count = len(re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", cleaned))
+    lowered = cleaned.lower()
+
+    if "очень длинная строка" in lowered and unknown_count >= 3:
+        return False, "gigaam_long_unknown_string", unknown_count, cleaned
+    if not compact:
+        if unknown_count > 0:
+            return False, "only_unknown_tokens", unknown_count, cleaned
+        return False, "empty_text", unknown_count, cleaned
+    if unknown_count >= 5 and len(compact) < 40:
+        return False, "many_unknowns_low_text", unknown_count, cleaned
+    if duration >= 8.0 and word_count <= 2:
+        return False, "too_few_words_for_long_audio", unknown_count, cleaned
+    if unknown_count >= 3:
+        unknown_ratio = unknown_count / max(1, unknown_count + len(compact))
+        if unknown_ratio >= 0.20:
+            return False, f"high_unknown_ratio_{unknown_ratio:.2f}", unknown_count, cleaned
+    return True, "ok", unknown_count, cleaned
+
+
+def _split_grouped_segment(
+    segment,
+    boundaries: tuple[float, float],
+    sample_rate: int,
+) -> list[tuple[object, tuple[float, float]]]:
+    start, end = float(boundaries[0]), float(boundaries[1])
+    duration = max(0.0, end - start)
+    if duration <= ASR_MAX_SUBCHUNK_SEC:
+        return [(segment, (start, end))]
+
+    parts = max(1, math.ceil(duration / ASR_MAX_SUBCHUNK_SEC))
+    samples = int(segment.shape[-1])
+    subchunks = []
+    for part_idx in range(parts):
+        sub_start = start + duration * part_idx / parts
+        sub_end = start + duration * (part_idx + 1) / parts
+        sample_start = int(round((sub_start - start) * sample_rate))
+        sample_end = (
+            samples
+            if part_idx == parts - 1
+            else int(round((sub_end - start) * sample_rate))
+        )
+        chunk = segment[sample_start:sample_end]
+        if int(chunk.shape[-1]) <= 0:
+            continue
+        subchunks.append((chunk, (sub_start, sub_end)))
+    return subchunks
+
+
+def _coverage_duration(segments: list[dict], *, valid_only: bool | None = None) -> float:
+    intervals = []
+    for seg in segments:
+        if valid_only is not None and bool(seg.get("asr_valid", True)) != valid_only:
+            continue
+        try:
+            start, end = seg["boundaries"]
+        except (KeyError, TypeError, ValueError):
+            continue
+        start = max(0.0, float(start))
+        end = max(0.0, float(end))
+        if end > start:
+            intervals.append((start, end))
+
+    intervals.sort()
+    merged = []
+    for start, end in intervals:
+        if not merged or start > merged[-1][1] + 0.001:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+    return sum(end - start for start, end in merged)
+
+
 def transcribe_file(model, audio_path: str, file_uuid: str | None = None) -> list:
     import torch
-    from gigaam.preprocess import SAMPLE_RATE
+    from gigaam.preprocess import SAMPLE_RATE, load_audio
     from gigaam.vad_utils import segment_audio_file
 
+    total_audio_duration = int(load_audio(audio_path).shape[-1]) / SAMPLE_RATE
     segments, boundaries = segment_audio_file(audio_path, SAMPLE_RATE, device=model._device)
-    total = max(1, len(boundaries))
+    decode_items = []
+    for segment, segment_boundaries in zip(segments, boundaries):
+        decode_items.extend(_split_grouped_segment(segment, segment_boundaries, SAMPLE_RATE))
+
+    total = max(1, len(decode_items))
     if file_uuid:
         _write_asr_progress(file_uuid, 0, total)
+    write_event(
+        "ASR",
+        f"DIAG ASR_SEGMENTATION grouped={len(boundaries)} subchunks={len(decode_items)} "
+        f"max_subchunk={ASR_MAX_SUBCHUNK_SEC:.1f}s audio={total_audio_duration:.3f}s",
+    )
 
     transcribed_segments = []
-    for idx, (segment, segment_boundaries) in enumerate(zip(segments, boundaries), start=1):
+    for idx, (segment, segment_boundaries) in enumerate(decode_items, start=1):
+        start, end = segment_boundaries
+        duration = max(0.0, float(end) - float(start))
         wav = segment.to(model._device).unsqueeze(0).to(model._dtype)
         length = torch.full([1], wav.shape[-1], device=model._device)
         encoded, encoded_len = model.forward(wav, length)
         result = model.decoding.decode(model.head, encoded, encoded_len)[0]
-        if result.replace("⁇", "").replace(" ", "").strip():
-            transcribed_segments.append(
-                {"transcription": result, "boundaries": segment_boundaries}
+        is_valid, invalid_reason, unknown_count, cleaned = _assess_asr_text(result, duration)
+        if not is_valid:
+            write_event(
+                "ASR",
+                "WARNING invalid ASR segment "
+                f"{_format_asr_time(start)}-{_format_asr_time(end)} "
+                f"duration={duration:.3f}s reason={invalid_reason} unknown={unknown_count}",
             )
+        transcribed_segments.append(
+            {
+                "transcription": cleaned if is_valid else "",
+                "boundaries": [float(start), float(end)],
+                "asr_valid": is_valid,
+                "asr_invalid_reason": "" if is_valid else invalid_reason,
+                "asr_raw_transcription": "" if is_valid else result,
+            }
+        )
         if file_uuid:
             _write_asr_progress(file_uuid, idx, total)
+
+    audio_coverage_sec = _coverage_duration(transcribed_segments)
+    valid_text_duration = _coverage_duration(transcribed_segments, valid_only=True)
+    invalid_duration = _coverage_duration(transcribed_segments, valid_only=False)
+    total_duration = max(total_audio_duration, 0.001)
+    audio_coverage_pct = audio_coverage_sec / total_duration * 100.0
+    valid_coverage_pct = valid_text_duration / total_duration * 100.0
+    invalid_coverage_pct = invalid_duration / total_duration * 100.0
+    coverage_msg = (
+        f"ASR coverage: audio={audio_coverage_pct:.1f}% "
+        f"valid={valid_coverage_pct:.1f}% invalid={invalid_coverage_pct:.1f}% "
+        f"valid_sec={valid_text_duration:.3f}/{total_audio_duration:.3f}"
+    )
+    write_event("ASR", coverage_msg)
+    if audio_coverage_pct - valid_coverage_pct >= ASR_COVERAGE_WARN_GAP_PCT:
+        write_event(
+            "ASR",
+            "WARNING valid ASR coverage заметно ниже audio coverage: "
+            f"audio={audio_coverage_pct:.1f}% valid={valid_coverage_pct:.1f}% "
+            f"gap={audio_coverage_pct - valid_coverage_pct:.1f}%",
+        )
 
     return transcribed_segments
 
@@ -162,11 +317,11 @@ def run_worker():
             f for f in glob.glob(os.path.join(QUEUE_DIR, "*"))
             if os.path.splitext(f)[1].lower() in AUDIO_EXTENSIONS
         ]
-        claimed_files = []
+        claimed_files = _claimed_processing_files()
         for audio_path in audio_files:
             claimed_path = _claim_audio_file(audio_path)
             if claimed_path:
-                claimed_files.append((audio_path, claimed_path))
+                claimed_files.append((os.path.basename(audio_path), claimed_path))
 
         if not claimed_files:
             clear_gpu_request("asr")
@@ -199,8 +354,7 @@ def run_worker():
             write_event("ASR", "Модель загружена")
             write_resource_event("ASR", "После загрузки GigaAM")
 
-        for original_audio_path, audio_path in claimed_files:
-            fname = os.path.basename(original_audio_path)
+        for fname, audio_path in claimed_files:
             file_uuid = os.path.splitext(fname)[0]
             write_event("ASR", f"DIAG WORKER_CLAIM file={fname} uuid={file_uuid} {_process_diag()}")
             write_event("ASR", f"Транскрибирую: {fname}")

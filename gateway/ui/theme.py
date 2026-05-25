@@ -199,6 +199,18 @@ APP_CSS = """
     line-height: 1.55;
 }
 
+.reader-text textarea {
+    min-height: 260px !important;
+    max-height: 420px !important;
+    overflow-y: auto !important;
+    resize: vertical;
+}
+
+.reader-text textarea:disabled {
+    pointer-events: auto !important;
+    cursor: text;
+}
+
 .output-text textarea {
     min-height: 220px;
 }
@@ -282,7 +294,7 @@ APP_CSS = """
     box-shadow: none !important;
     padding: 0 !important;
 }
-.kb-reader-group {
+.svelte-1p9262q {
     border: 0 !important;
 
 }
@@ -352,29 +364,52 @@ APP_CSS = """
 
 .kb-sidebar-head {
     position: relative;
-
-    align-items: center;
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    align-items: stretch !important;
     gap: 8px;
     margin-bottom: 4px;
+    width: 100%;
+}
+
+.kb-sidebar-meta {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    gap: 4px !important;
+}
+
+.kb-sidebar-meta > div[class*="styler"] {
+    gap: 4px !important;
 }
 
 .kb-sidebar-title {
-    text-align: center;
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
     flex: 1 1 auto;
-    padding-top: 8px;
+    min-width: 0;
+    min-height: 30px;
+    padding-top: 0;
+    text-align: center;
 }
 
 .kb-sidebar-title p {
     margin: 0 !important;
     text-align: center;
+    width: 100%;
+}
+
+.kb-sidebar-stats div {
+    margin: 0 !important;
+    width: 100%;
 }
 
 .kb-sidebar-toggle {
-    flex: 0 0 34px !important;
-    min-width: 34px !important;
-    width: 34px !important;
-    min-height: 38px !important;
-    height: 38px !important;
+    flex: 0 0 44px !important;
+    min-width: 44px !important;
+    width: 44px !important;
+    min-height: 80px !important;
+    height: 80px !important;
     padding: 0 !important;
 }
 

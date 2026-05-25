@@ -13,10 +13,16 @@ def build_transcription_tab():
                 gr.Markdown("### Создать задание")
                 with gr.Tabs():
                     with gr.Tab("Аудио"):
-                        audio_input = gr.Audio(
-                            sources=["microphone", "upload"],
+                        audio_input = gr.File(
+                            file_types=[".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac"],
                             type="filepath",
-                            label="Запись или загрузка аудио",
+                            label="Загрузка аудиофайла",
+                        )
+                        microphone_input = gr.Audio(
+                            sources=["microphone"],
+                            type="filepath",
+                            editable=False,
+                            label="Запись с микрофона",
                         )
                         audio_btn = gr.Button(
                             "Создать задание", variant="primary", elem_classes=["primary-action"]
@@ -76,6 +82,7 @@ def build_transcription_tab():
 
     return {
         "audio_input": audio_input,
+        "microphone_input": microphone_input,
         "audio_btn": audio_btn,
         "video_input": video_input,
         "video_btn": video_btn,

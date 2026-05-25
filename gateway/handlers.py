@@ -7,6 +7,7 @@ _N = 8 -- фиксированное число выходов poll_outputs, д�
 import os
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -47,6 +48,35 @@ def _write_meta(file_uuid, report_mode, sum_method=DEFAULT_SUMMARIZATION_METHOD)
         json.dump(meta, f)
 
 
+def _probe_media_info(file_path):
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration,size",
+                "-of",
+                "json",
+                file_path,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=True,
+        )
+        fmt = json.loads(proc.stdout).get("format", {})
+        duration = float(fmt.get("duration") or 0)
+        size = int(fmt.get("size") or os.path.getsize(file_path))
+        return f"duration={duration:.1f}s, size={size}B"
+    except Exception as e:
+        size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+        return f"duration=unknown, size={size}B, probe_error={e}"
+
+
 def save_media(file_path, report_mode="Конспект", sum_method="Hierarchical", source_type="audio"):
     if file_path is None:
         write_event("UI", "Отправка медиа отменена: файл не выбран")
@@ -58,6 +88,7 @@ def save_media(file_path, report_mode="Конспект", sum_method="Hierarchic
     source_name = os.path.basename(file_path)
     write_event("UI", f"Принят медиафайл: uuid={file_uuid}, ext={ext or 'unknown'}")
     shutil.copy(file_path, dest)
+    media_info = _probe_media_info(dest)
     _write_meta(file_uuid, report_mode, sum_method)
     create_task(
         file_uuid,
@@ -67,7 +98,7 @@ def save_media(file_path, report_mode="Конспект", sum_method="Hierarchic
         sum_method=sum_method,
         status="queued_asr",
     )
-    write_event("UI", f"Медиафайл поставлен в очередь: {os.path.basename(dest)}")
+    write_event("UI", f"Медиафайл поставлен в очередь: {os.path.basename(dest)} ({media_info})")
     write_resource_event("UI", "После постановки медиа в очередь")
     return f"Создано задание {file_uuid}", file_uuid, "", gr.update(), ""
 

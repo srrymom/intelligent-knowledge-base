@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(GATEWAY_DIR, ".."))
 from shared.config import GATEWAY_PID_FILE
 from shared.process_singleton import singleton_process
 from runtime import ensure_localhost_bypasses_proxy, logger
+from monitor import shutdown_workers
 
 ensure_localhost_bypasses_proxy()
 
@@ -38,3 +39,8 @@ if __name__ == "__main__":
         except Exception:
             logger.exception("Critical error while launching gateway/app.py")
             raise
+        finally:
+            try:
+                shutdown_workers()
+            except Exception:
+                logger.exception("Failed to shutdown workers on gateway exit")

@@ -33,6 +33,8 @@ def _activity_log_tailer_enabled() -> bool:
 
 
 def _should_echo_activity_line(line: str) -> bool:
+    if "DIAG " in line:
+        return False
     return any(marker in line for marker in ("] ASR:", "] LLM:", "] RAG:"))
 
 
@@ -58,7 +60,9 @@ def start_activity_log_console_tailer():
             try:
                 size = os.path.getsize(ACTIVITY_LOG)
                 if size < position:
-                    position = 0
+                    position = size
+                    time.sleep(0.5)
+                    continue
                 with open(ACTIVITY_LOG, "r", encoding="utf-8", errors="replace") as f:
                     f.seek(position)
                     while True:
