@@ -24,11 +24,12 @@ def wire_transcription_events(t, state, timer, monitor_timer):
         t["task_action_status"],
         state["current_uuid"],
         t["task_list_html"],
+        t["activity_log_box"],
     ]
 
     def _after_create(result):
         message, task_id = result[0], result[1]
-        return create_message(message, task_id), task_id, refresh_task_ui()
+        return create_message(message, task_id), task_id, refresh_task_ui(), format_activity_log()
 
     def create_audio_task(audio_path, report_mode, sum_method):
         return _after_create(save_media(audio_path, report_mode, sum_method, source_type="audio"))
@@ -62,20 +63,25 @@ def wire_transcription_events(t, state, timer, monitor_timer):
     )
 
     timer.tick(
-        fn=refresh_task_ui,
-        outputs=[t["task_list_html"]],
+        fn=lambda: (refresh_task_ui(), format_activity_log()),
+        outputs=[t["task_list_html"], t["activity_log_box"]],
         queue=False,
         show_progress="hidden",
     )
     t["refresh_tasks_btn"].click(
-        fn=refresh_task_ui,
-        outputs=[t["task_list_html"]],
+        fn=lambda: (refresh_task_ui(), format_activity_log()),
+        outputs=[t["task_list_html"], t["activity_log_box"]],
         queue=False,
         show_progress="hidden",
     )
+
+    def clear_finished_with_log():
+        task_list, message = clear_finished_task_rows()
+        return task_list, message, format_activity_log()
+
     t["clear_finished_btn"].click(
-        fn=clear_finished_task_rows,
-        outputs=[t["task_list_html"], t["task_action_status"]],
+        fn=clear_finished_with_log,
+        outputs=[t["task_list_html"], t["task_action_status"], t["activity_log_box"]],
         queue=False,
         show_progress="hidden",
     )
