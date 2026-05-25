@@ -18,6 +18,8 @@ from shared.config import (
     QUEUE_DIR, TRANSCRIPT_DIR, SUMMARY_DIR, LOCK_FILE,
     DEFAULT_SUMMARIZATION_METHOD, KB_DIR, PROJECT_ROOT, SUMMARIZATION_METHODS,
 )
+from shared.log import write_event, write_resource_event
+from storage.tasks import create_task
 
 from formatting import (
     format_segments, is_valid_segment, render_topics, render_word_stats,
@@ -45,16 +47,29 @@ def _write_meta(file_uuid, report_mode, sum_method=DEFAULT_SUMMARIZATION_METHOD)
         json.dump(meta, f)
 
 
-def save_media(file_path, report_mode="Конспект", sum_method="Hierarchical"):
+def save_media(file_path, report_mode="Конспект", sum_method="Hierarchical", source_type="audio"):
     if file_path is None:
+        write_event("UI", "Отправка медиа отменена: файл не выбран")
         return "Файл не выбран", None, "", gr.update(), ""
 
     file_uuid = str(uuid.uuid4())
     ext = os.path.splitext(file_path)[1]
     dest = os.path.join(QUEUE_DIR, f"{file_uuid}{ext}")
+    source_name = os.path.basename(file_path)
+    write_event("UI", f"Принят медиафайл: uuid={file_uuid}, ext={ext or 'unknown'}")
     shutil.copy(file_path, dest)
     _write_meta(file_uuid, report_mode, sum_method)
-    return "Файл поставлен в очередь...", file_uuid, "", gr.update(), ""
+    create_task(
+        file_uuid,
+        source_type=source_type,
+        source_name=source_name,
+        report_mode=report_mode,
+        sum_method=sum_method,
+        status="queued_asr",
+    )
+    write_event("UI", f"Медиафайл поставлен в очередь: {os.path.basename(dest)}")
+    write_resource_event("UI", "После постановки медиа в очередь")
+    return f"Создано задание {file_uuid}", file_uuid, "", gr.update(), ""
 
 
 def save_text(text_input, text_file, report_mode="Конспект", sum_method="Hierarchical"):
@@ -66,15 +81,28 @@ def save_text(text_input, text_file, report_mode="Конспект", sum_method=
         text_content = text_input.strip()
 
     if not text_content:
+        write_event("UI", "Отправка текста отменена: текст пустой")
         return "Текст не введён", None, "", gr.update(), ""
 
     file_uuid = str(uuid.uuid4())
     segments = [{"transcription": text_content, "boundaries": [0, 0]}]
     path = os.path.join(TRANSCRIPT_DIR, f"{file_uuid}.json")
+    source_name = os.path.basename(text_file) if text_file is not None else "Введённый текст"
+    write_event("UI", f"Принят текст: uuid={file_uuid}, chars={len(text_content)}")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(segments, f, ensure_ascii=False)
     _write_meta(file_uuid, report_mode, sum_method)
-    return "Текст отправлен на обработку", file_uuid, "", gr.update(), ""
+    create_task(
+        file_uuid,
+        source_type="text",
+        source_name=source_name,
+        report_mode=report_mode,
+        sum_method=sum_method,
+        status="waiting_llm",
+    )
+    write_event("UI", f"Текст отправлен в LLM-очередь: {file_uuid}.json")
+    write_resource_event("UI", "После постановки текста в LLM-очередь")
+    return f"Создано задание {file_uuid}", file_uuid, "", gr.update(), ""
 
 
 def make_export_file(entry_id):

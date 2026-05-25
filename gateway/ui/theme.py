@@ -426,6 +426,28 @@ APP_CSS = """
     line-height: 1.35;
 }
 
+.task-row__details {
+    display: grid;
+    gap: 3px;
+    margin: 0 0 8px;
+}
+
+.task-row__detail {
+    color: var(--app-muted);
+    font-size: 12px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.task-row__detail b {
+    color: #334155;
+}
+
+.task-row__detail--error,
+.task-row__detail--error b {
+    color: #a31220;
+}
+
 .task-status {
     flex: 0 0 auto;
     border: 1px solid var(--app-border);
@@ -493,8 +515,7 @@ APP_CSS = """
 }
 
 .task-empty-state,
-.task-action-message,
-.task-detail {
+.task-action-message {
     border: 1px solid var(--app-border);
     border-radius: 8px;
     background: #f8fafc;
@@ -515,19 +536,6 @@ APP_CSS = """
     display: block;
     color: var(--app-muted);
     overflow-wrap: anywhere;
-}
-
-.task-detail {
-    margin-top: 8px;
-}
-
-.task-detail div + div {
-    margin-top: 4px;
-}
-
-.task-selector {
-    max-height: 180px;
-    overflow-y: auto;
 }
 
 .kb-empty-state {
