@@ -14,22 +14,47 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from shared.config import (
     ASR_IDLE_TIMEOUT_SEC,
     ASR_MODEL,
+    ASR_WORKER_PID_FILE,
     FFMPEG_PATH,
     LLM_MODEL,
     LOCK_FILE,
     OLLAMA_URL,
     QUEUE_DIR,
+    QUEUE_PROCESSING_DIR,
     SUMMARY_DIR,
     TRANSCRIPT_DIR,
 )
 from shared.gpu_coord import acquire_gpu, clear_gpu_request, read_gpu_state, release_gpu, request_gpu
-from shared.log import write_event
+from shared.log import write_event, write_resource_event
+from shared.process_singleton import singleton_process
 
 if sys.platform == 'win32':
     os.environ["PATH"] += os.path.pathsep + FFMPEG_PATH
     os.add_dll_directory(FFMPEG_PATH)
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac"}
+
+
+def _process_diag() -> str:
+    return (
+        f"pid={os.getpid()} ppid={os.getppid()} "
+        f"exe={sys.executable} argv={' '.join(sys.argv)}"
+    )
+
+
+def _claim_audio_file(audio_path: str) -> str | None:
+    fname = os.path.basename(audio_path)
+    stem, ext = os.path.splitext(fname)
+    claimed_path = os.path.join(QUEUE_PROCESSING_DIR, f"{stem}.{os.getpid()}{ext}")
+    try:
+        os.replace(audio_path, claimed_path)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        write_event("ASR", f"DIAG CLAIM_FAILED file={fname} error={e} {_process_diag()}")
+        return None
+    write_event("ASR", f"DIAG CLAIM_OK file={fname} claimed_path={claimed_path} {_process_diag()}")
+    return claimed_path
 
 
 def _asr_progress_path(file_uuid: str) -> str:
@@ -115,16 +140,20 @@ def unload_model(model):
 
 def _release_asr_resources(model):
     write_event("ASR", "Очередь пуста, выгружаю модель...")
+    write_resource_event("ASR", "Перед выгрузкой GigaAM")
     unload_model(model)
     time.sleep(1)
     if os.path.exists(LOCK_FILE):
         os.remove(LOCK_FILE)
     release_gpu("asr")
     write_event("ASR", "Модель выгружена, GPU свободен")
+    write_resource_event("ASR", "После выгрузки GigaAM")
 
 
 def run_worker():
+    write_event("ASR", f"DIAG worker_start {_process_diag()}")
     write_event("ASR", "Воркер запущен, ожидание файлов...")
+    write_resource_event("ASR", "Старт ASR-воркера")
     model = None
     last_activity = 0.0
 
@@ -133,8 +162,13 @@ def run_worker():
             f for f in glob.glob(os.path.join(QUEUE_DIR, "*"))
             if os.path.splitext(f)[1].lower() in AUDIO_EXTENSIONS
         ]
+        claimed_files = []
+        for audio_path in audio_files:
+            claimed_path = _claim_audio_file(audio_path)
+            if claimed_path:
+                claimed_files.append((audio_path, claimed_path))
 
-        if not audio_files:
+        if not claimed_files:
             clear_gpu_request("asr")
             if model is not None:
                 state = read_gpu_state()
@@ -157,16 +191,20 @@ def run_worker():
                 continue
 
             write_event("ASR", "Загружаю модель GigaAM...")
+            write_resource_event("ASR", "Перед загрузкой GigaAM")
             open(LOCK_FILE, "w").close()
             _unload_ollama()
             model = load_model()
             last_activity = time.time()
             write_event("ASR", "Модель загружена")
+            write_resource_event("ASR", "После загрузки GigaAM")
 
-        for audio_path in audio_files:
-            fname = os.path.basename(audio_path)
+        for original_audio_path, audio_path in claimed_files:
+            fname = os.path.basename(original_audio_path)
             file_uuid = os.path.splitext(fname)[0]
+            write_event("ASR", f"DIAG WORKER_CLAIM file={fname} uuid={file_uuid} {_process_diag()}")
             write_event("ASR", f"Транскрибирую: {fname}")
+            write_resource_event("ASR", f"Перед транскрипцией {fname}")
             t_start = time.time()
             try:
                 segments = transcribe_file(model, audio_path, file_uuid=file_uuid)
@@ -184,10 +222,13 @@ def run_worker():
             result_path = os.path.join(TRANSCRIPT_DIR, f"{file_uuid}.json")
             with open(result_path, "w", encoding="utf-8") as f:
                 f.write(result)
+            write_event("ASR", f"DIAG WRITE_TRANSCRIPT uuid={file_uuid} path={result_path} {_process_diag()}")
             os.remove(audio_path)
+            write_event("ASR", f"DIAG REMOVE_CLAIMED_FILE uuid={file_uuid} path={audio_path} {_process_diag()}")
             seg_count = len(json.loads(result))
             last_activity = time.time()
             write_event("ASR", f"Готово: {seg_count} сегментов за {elapsed:.1f}с")
+            write_resource_event("ASR", f"После транскрипции {fname}")
 
             if (read_gpu_state().get("requests") or {}).get("llm"):
                 break
@@ -196,13 +237,16 @@ def run_worker():
 
 
 if __name__ == "__main__":
-    try:
-        run_worker()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        clear_gpu_request("asr")
-        release_gpu("asr")
-        if os.path.exists(LOCK_FILE):
-            os.remove(LOCK_FILE)
-        write_event("ASR", "Воркер остановлен")
+    with singleton_process("asr_worker", ASR_WORKER_PID_FILE, "ASR") as acquired:
+        if not acquired:
+            sys.exit(0)
+        try:
+            run_worker()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            clear_gpu_request("asr")
+            release_gpu("asr")
+            if os.path.exists(LOCK_FILE):
+                os.remove(LOCK_FILE)
+            write_event("ASR", "Воркер остановлен")

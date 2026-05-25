@@ -64,7 +64,7 @@ def build_kb_tab():
 
             # — правая колонка: детали записи.
             with gr.Column(scale=4, elem_classes=["kb-panel", "kb-reader-panel"]):
-                with gr.Group() as kb_reader_content:
+                with gr.Group( elem_classes=["kb-reader-group"]) as kb_reader_content:
                     kb_report_mode = gr.Radio(
                         ["Конспект", "Структурированный отчёт"],
                         value="Конспект",
@@ -82,7 +82,7 @@ def build_kb_tab():
                         elem_classes=["summary-text"],
                     )
                     kb_report_md = gr.Markdown(visible=False)
-                    with gr.Accordion("Транскрипция", open=False):
+                    with gr.Accordion("Транскрипция", open=False, elem_classes=["kb-transcript-box"]):
                         kb_mode = gr.Radio(
                             choices=["С временными метками", "Сплошной текст"],
                             value="С временными метками",

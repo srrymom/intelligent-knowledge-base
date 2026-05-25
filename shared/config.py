@@ -12,6 +12,7 @@ DATA_DIR = os.environ.get("DATA_DIR", os.path.join(PROJECT_ROOT, "data"))
 
 # Очередь файлов для транскрипции: asr/worker.py забирает файлы отсюда
 QUEUE_DIR = os.path.join(DATA_DIR, "queue")
+QUEUE_PROCESSING_DIR = os.path.join(DATA_DIR, "queue_processing")
 
 # Готовые транскрипты (.json): llm/worker.py читает отсюда, gateway/handlers.py тоже
 TRANSCRIPT_DIR = os.path.join(DATA_DIR, "transcript")
@@ -30,6 +31,9 @@ RAG_DB_DIR = os.path.join(DATA_DIR, "rag_db")
 
 # Lock-файл: ASR-воркер создаёт его пока занят, удаляет когда освободил VRAM
 LOCK_FILE = os.path.join(DATA_DIR, "asr.lock")
+GATEWAY_PID_FILE = os.path.join(DATA_DIR, "gateway.pid")
+ASR_WORKER_PID_FILE = os.path.join(DATA_DIR, "asr_worker.pid")
+LLM_WORKER_PID_FILE = os.path.join(DATA_DIR, "llm_worker.pid")
 
 # Состояние владения GPU между ASR и LLM-воркерами
 GPU_STATE_FILE = os.path.join(DATA_DIR, "gpu_state.json")
@@ -72,5 +76,5 @@ BENCHMARK_DIR = os.path.join(DATA_DIR, "benchmark")
 BENCHMARK_RESULTS_DIR = os.path.join(BENCHMARK_DIR, "results")
 
 # Создать рабочие директории если не существуют
-for _d in [QUEUE_DIR, TRANSCRIPT_DIR, SUMMARY_DIR, EXPORT_DIR, KB_DIR, RAG_DB_DIR, BENCHMARK_RESULTS_DIR, PROCESSED_DIR]:
+for _d in [QUEUE_DIR, QUEUE_PROCESSING_DIR, TRANSCRIPT_DIR, SUMMARY_DIR, EXPORT_DIR, KB_DIR, RAG_DB_DIR, BENCHMARK_RESULTS_DIR, PROCESSED_DIR]:
     os.makedirs(_d, exist_ok=True)

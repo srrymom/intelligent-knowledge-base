@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from shared.config import KB_DIR, RAG_DB_DIR, LLM_MODEL, DATA_DIR, OLLAMA_URL
 from shared.gpu_coord import acquire_gpu, clear_gpu_request, release_gpu, request_gpu
+from shared.log import write_event, write_resource_event
 from llm.summarization import unload_from_vram
 
 import chromadb
@@ -64,7 +65,9 @@ def _get_embedder():
     if embedder is not None:
         return embedder
     try:
+        write_resource_event("RAG", "Перед загрузкой embedding-модели")
         embedder = _load_embedder()
+        write_resource_event("RAG", "После загрузки embedding-модели")
         return embedder
     except OSError as e:
         if os.path.exists(EMBEDDER_REPO_CACHE):
@@ -133,13 +136,14 @@ def is_indexed(entry_id: str) -> bool:
 def ensure_indexed():
     kb_files = [fname for fname in os.listdir(KB_DIR) if fname.endswith(".json")]
     if not kb_files:
-        print("[RAG] база знаний пуста, индексировать нечего")
+        write_event("RAG", "База знаний пуста, индексировать нечего")
         return
 
     try:
         _get_embedder()
     except Exception as e:
-        print(f"[RAG] embedding model unavailable: {e}")
+        write_event("RAG", f"Embedding model unavailable: {e}")
+        write_resource_event("RAG", "Ошибка загрузки embedding-модели")
         return
 
     existing = set()
@@ -159,11 +163,11 @@ def ensure_indexed():
             with open(path, "r", encoding="utf-8") as f:
                 entry = json.load(f)
             index_entry(entry)
-            print(f"[RAG] indexed: {entry.get('title', entry_id)}")
+            write_event("RAG", f"Indexed: {entry.get('title', entry_id)}")
         except Exception as e:
-            print(f"[RAG] ошибка индексации {fname}: {e}")
+            write_event("RAG", f"Ошибка индексации {fname}: {e}")
 
-    print(f"[RAG] индекс готов ({collection.count()} чанков)")
+    write_event("RAG", f"Индекс готов ({collection.count()} чанков)")
 
 
 SYSTEM_PROMPT = (
@@ -173,6 +177,7 @@ SYSTEM_PROMPT = (
 
 
 def ask(question):
+    write_resource_event("RAG", "Перед RAG-запросом")
     if collection.count() == 0:
         return {
             "answer": "База знаний пока пуста или ещё не проиндексирована.",
@@ -201,6 +206,7 @@ def ask(question):
     )
 
     _acquire_rag_gpu_slot()
+    write_resource_event("RAG", "GPU захвачена для RAG-запроса")
     try:
         client = ollama.Client(host=OLLAMA_URL, timeout=OLLAMA_TIMEOUT_SEC)
         response = client.chat(
@@ -216,5 +222,6 @@ def ask(question):
     finally:
         unload_from_vram()
         release_gpu("rag")
+        write_resource_event("RAG", "После RAG-запроса")
 
     return {"answer": answer, "sources": sources}

@@ -11,16 +11,33 @@ import psutil
 import httpx
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from shared.config import KB_DIR, LOCK_FILE, OLLAMA_URL, PROJECT_ROOT, QUEUE_DIR, TRANSCRIPT_DIR
+from shared.config import (
+    ASR_WORKER_PID_FILE,
+    KB_DIR,
+    LLM_WORKER_PID_FILE,
+    LOCK_FILE,
+    OLLAMA_URL,
+    PROJECT_ROOT,
+    QUEUE_DIR,
+    TRANSCRIPT_DIR,
+)
 from shared.gpu_coord import clear_gpu_request, read_gpu_state, release_gpu
+from shared.log import write_event
+from shared.process_singleton import get_live_singleton_pid
 
 # Popen-объекты воркеров — регистрируются из app.py при старте
 _workers: dict = {}
+_WORKER_PID_FILES = {
+    "asr": ASR_WORKER_PID_FILE,
+    "llm": LLM_WORKER_PID_FILE,
+}
 
 
 def register_workers(asr_proc, llm_proc):
     _workers["asr"] = {"proc": asr_proc, "label": "ASR Worker", "script": "asr/worker.py"}
     _workers["llm"] = {"proc": llm_proc, "label": "LLM Worker", "script": "llm/worker.py"}
+    write_event("UI", f"DIAG REGISTER_WORKER key=asr pid={asr_proc.pid} poll={asr_proc.poll()}")
+    write_event("UI", f"DIAG REGISTER_WORKER key=llm pid={llm_proc.pid} poll={llm_proc.poll()}")
 
 
 def get_worker_health() -> list[dict]:
@@ -30,6 +47,15 @@ def get_worker_health() -> list[dict]:
         proc = info["proc"]
         alive = proc.poll() is None  # None = процесс жив
         if not alive:
+            singleton_pid = get_live_singleton_pid(_WORKER_PID_FILES[key])
+            if proc.returncode == 0 and singleton_pid:
+                status = f"работает pid={singleton_pid}"
+                results.append({"label": info["label"], "alive": True, "status": status})
+                continue
+            write_event(
+                "UI",
+                f"DIAG MONITOR_RESTART key={key} old_pid={proc.pid} returncode={proc.returncode}",
+            )
             release_gpu(key)
             clear_gpu_request(key)
             # Перезапуск
@@ -38,6 +64,7 @@ def get_worker_health() -> list[dict]:
             script = os.path.join(PROJECT_ROOT, info["script"])
             new_proc = subprocess.Popen([python, script])
             info["proc"] = new_proc
+            write_event("UI", f"DIAG MONITOR_RESTARTED key={key} new_pid={new_proc.pid}")
             status = "перезапущен"
         else:
             status = "работает"

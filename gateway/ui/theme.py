@@ -282,7 +282,10 @@ APP_CSS = """
     box-shadow: none !important;
     padding: 0 !important;
 }
+.kb-reader-group {
+    border: 0 !important;
 
+}
 .kb-report-toggle,
 .kb-report-toggle > div,
 .kb-report-toggle .wrap {
@@ -524,7 +527,15 @@ APP_CSS = """
     font-size: 13px;
     line-height: 1.45;
 }
+.kb-transcript-box,
+.kb-transcript-box div[class*="styler"] {
+    border: 1px solid var(--app-border-strong) !important;
+    border-radius: 8px !important;
+    padding: 8px !important;}
 
+.reader-text textarea {
+    background: #fbfdff !important;
+}
 .task-empty-state strong,
 .task-action-message strong {
     display: block;

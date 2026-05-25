@@ -17,15 +17,52 @@ from shared.config import (
     DEFAULT_SUMMARIZATION_METHOD,
     KB_DIR,
     LLM_IDLE_TIMEOUT_SEC,
+    LLM_WORKER_PID_FILE,
     LOCK_FILE,
     QUEUE_DIR,
     SUMMARY_DIR,
     TRANSCRIPT_DIR,
 )
 from shared.gpu_coord import acquire_gpu, clear_gpu_request, read_gpu_state, release_gpu, request_gpu
-from shared.log import write_event
+from shared.log import write_event, write_resource_event
+from shared.process_singleton import singleton_process
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".mp4", ".mkv", ".avi", ".mov"}
+
+
+def _process_diag() -> str:
+    return (
+        f"pid={os.getpid()} ppid={os.getppid()} "
+        f"exe={sys.executable} argv={' '.join(sys.argv)}"
+    )
+
+
+def _transcript_lock_path(file_uuid: str) -> str:
+    return os.path.join(TRANSCRIPT_DIR, f"{file_uuid}.json.lock")
+
+
+def _claim_transcript(file_uuid: str) -> str | None:
+    lock_path = _transcript_lock_path(file_uuid)
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return None
+    except OSError as e:
+        write_event("LLM", f"DIAG CLAIM_FAILED uuid={file_uuid} error={e} {_process_diag()}")
+        return None
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(_process_diag())
+    write_event("LLM", f"DIAG CLAIM_OK uuid={file_uuid} lock={lock_path} {_process_diag()}")
+    return lock_path
+
+
+def _release_transcript_claim(lock_path: str) -> None:
+    try:
+        os.remove(lock_path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        write_event("LLM", f"DIAG CLAIM_RELEASE_FAILED lock={lock_path} error={e} {_process_diag()}")
 
 
 def write_progress(file_uuid, stage, current=0, total=0):
@@ -80,9 +117,11 @@ def _pending_transcripts() -> list[str]:
 
 
 def _release_llm_resources():
+    write_resource_event("LLM", "Перед выгрузкой LLM из VRAM")
     unload_from_vram()
     release_gpu("llm")
     write_event("LLM", "Модель выгружена, GPU освобождена")
+    write_resource_event("LLM", "После выгрузки LLM из VRAM")
 
 
 def _process_one(file_uuid: str):
@@ -94,7 +133,9 @@ def _process_one(file_uuid: str):
         write_event("LLM", f"Уже в KB: {file_uuid}")
         return
 
+    write_event("LLM", f"DIAG WORKER_CLAIM uuid={file_uuid} json_path={json_path} {_process_diag()}")
     write_event("LLM", f"Обработка: {file_uuid}")
+    write_resource_event("LLM", f"Перед обработкой {file_uuid}")
     try:
         with open(json_path, "r", encoding="utf-8") as f:
             segments = json.load(f)
@@ -134,6 +175,7 @@ def _process_one(file_uuid: str):
 
     except Exception as e:
         write_event("LLM", f"Ошибка: {e}")
+        write_resource_event("LLM", f"Ошибка обработки {file_uuid}")
         entry = {
             "id": file_uuid,
             "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -149,17 +191,22 @@ def _process_one(file_uuid: str):
 
     with open(kb_path, "w", encoding="utf-8") as f:
         json.dump(entry, f, ensure_ascii=False, indent=2)
+    write_event("LLM", f"DIAG WRITE_KB uuid={file_uuid} path={kb_path} {_process_diag()}")
 
     try:
         os.remove(json_path)
+        write_event("LLM", f"DIAG REMOVE_TRANSCRIPT uuid={file_uuid} path={json_path} {_process_diag()}")
     except Exception:
         pass
 
     write_event("LLM", f"Готово: '{entry['title']}' [{entry['sum_method']}]")
+    write_resource_event("LLM", f"После обработки {file_uuid}")
 
 
 def run_worker():
+    write_event("LLM", f"DIAG worker_start {_process_diag()}")
     write_event("LLM", "Воркер запущен, ожидает транскрипты...")
+    write_resource_event("LLM", "Старт LLM-воркера")
     llm_active = False
     last_activity = 0.0
 
@@ -180,6 +227,7 @@ def run_worker():
 
         if not check_ollama_available():
             write_event("LLM", "Ollama недоступна — ожидание 30 сек...")
+            write_resource_event("LLM", "Ollama недоступна")
             clear_gpu_request("llm")
             if llm_active:
                 _release_llm_resources()
@@ -199,10 +247,17 @@ def run_worker():
             llm_active = True
             last_activity = time.time()
             write_event("LLM", "GPU захвачена для суммаризации")
+            write_resource_event("LLM", "GPU захвачена для суммаризации")
 
         for file_uuid in pending:
-            _process_one(file_uuid)
-            last_activity = time.time()
+            lock_path = _claim_transcript(file_uuid)
+            if not lock_path:
+                continue
+            try:
+                _process_one(file_uuid)
+                last_activity = time.time()
+            finally:
+                _release_transcript_claim(lock_path)
 
             state = read_gpu_state()
             if _pending_audio_exists() and (state.get("requests") or {}).get("asr"):
@@ -212,11 +267,14 @@ def run_worker():
 
 
 if __name__ == "__main__":
-    try:
-        run_worker()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        clear_gpu_request("llm")
-        release_gpu("llm")
-        write_event("LLM", "Воркер остановлен")
+    with singleton_process("llm_worker", LLM_WORKER_PID_FILE, "LLM") as acquired:
+        if not acquired:
+            sys.exit(0)
+        try:
+            run_worker()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            clear_gpu_request("llm")
+            release_gpu("llm")
+            write_event("LLM", "Воркер остановлен")
