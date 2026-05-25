@@ -4,6 +4,8 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from html import escape
 
 from shared.config import (
@@ -23,6 +25,55 @@ from shared.ollama_runtime import ensure_ollama_started
 from monitor import register_workers
 
 logger = setup_runtime_logging("UI")
+_activity_log_tailer_started = False
+
+
+def _activity_log_tailer_enabled() -> bool:
+    return os.environ.get("GATEWAY_TAIL_WORKER_LOGS", "1").lower() not in {"0", "false", "no"}
+
+
+def _should_echo_activity_line(line: str) -> bool:
+    return any(marker in line for marker in ("] ASR:", "] LLM:", "] RAG:"))
+
+
+def start_activity_log_console_tailer():
+    """Print worker activity.log events in the current gateway console.
+
+    ASR/LLM workers can already be alive due to singleton locks, so their stdout may
+    belong to an old console. Tailing activity.log keeps the current console useful.
+    """
+    global _activity_log_tailer_started
+    if _activity_log_tailer_started or not _activity_log_tailer_enabled():
+        return
+    _activity_log_tailer_started = True
+
+    try:
+        position = os.path.getsize(ACTIVITY_LOG)
+    except OSError:
+        position = 0
+
+    def _tail():
+        nonlocal position
+        while True:
+            try:
+                size = os.path.getsize(ACTIVITY_LOG)
+                if size < position:
+                    position = 0
+                with open(ACTIVITY_LOG, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(position)
+                    while True:
+                        line = f.readline()
+                        if not line:
+                            break
+                        position = f.tell()
+                        if _should_echo_activity_line(line):
+                            print(line, end="", flush=True)
+            except OSError:
+                pass
+            time.sleep(0.5)
+
+    thread = threading.Thread(target=_tail, name="activity-log-console-tailer", daemon=True)
+    thread.start()
 
 
 def ensure_localhost_bypasses_proxy():
@@ -80,11 +131,15 @@ def start_workers():
             "Проверь установку asr/.venv и llm/.venv."
         )
 
+    worker_env = os.environ.copy()
+    if _activity_log_tailer_enabled():
+        worker_env["LOG_TO_CONSOLE"] = "0"
+
     logger.info("Стартую ASR worker: %s %s", asr_python, asr_worker)
-    asr_proc = subprocess.Popen([asr_python, asr_worker])
+    asr_proc = subprocess.Popen([asr_python, asr_worker], env=worker_env)
     logger.info("ASR worker pid=%s", asr_proc.pid)
     logger.info("Стартую LLM worker: %s %s", llm_python, llm_worker)
-    llm_proc = subprocess.Popen([llm_python, llm_worker])
+    llm_proc = subprocess.Popen([llm_python, llm_worker], env=worker_env)
     logger.info("LLM worker pid=%s", llm_proc.pid)
     register_workers(asr_proc, llm_proc)
     write_resource_event("UI", "Воркеры запущены")

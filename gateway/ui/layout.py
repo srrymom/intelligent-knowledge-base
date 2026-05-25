@@ -4,7 +4,13 @@ import time
 
 import gradio as gr
 
-from runtime import logger, log_startup_environment, start_workers, write_resource_event
+from runtime import (
+    logger,
+    log_startup_environment,
+    start_activity_log_console_tailer,
+    start_workers,
+    write_resource_event,
+)
 from ui.theme import APP_CSS, APP_HEADER_HTML, APP_THEME, FORCE_LIGHT_THEME_HEAD
 from ui.tabs.transcription import build_transcription_tab
 from ui.tabs.knowledge_base import build_kb_tab
@@ -17,6 +23,7 @@ from ui.events.chat_events import wire_chat_events
 def launch_ui():
     log_startup_environment()
     started_at = time.time()
+    start_activity_log_console_tailer()
     start_workers()
     logger.info("Собираю Gradio UI")
 
