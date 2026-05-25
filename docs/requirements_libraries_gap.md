@@ -131,7 +131,7 @@ ollama
 - `scikit-learn`;
 - `numpy`.
 
-Ранее документация `about.md` говорила, что `llm/.venv` содержит `ollama`, `sentence-transformers`, `sklearn`, но фактический `llm/requirements.txt` содержал только `ollama`. Сейчас `sentence-transformers`, `scikit-learn` и `numpy` добавлены, чтобы `Semantic-Cluster` не откатывался к `Hierarchical` только из-за отсутствующих зависимостей.
+Ранее документация `docs/archive/about.md` говорила, что `llm/.venv` содержит `ollama`, `sentence-transformers`, `sklearn`, но фактический `llm/requirements.txt` содержал только `ollama`. Сейчас `sentence-transformers`, `scikit-learn` и `numpy` добавлены, чтобы `Semantic-Cluster` не откатывался к `Hierarchical` только из-за отсутствующих зависимостей.
 
 ### Benchmark-зависимости
 

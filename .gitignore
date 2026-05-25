@@ -12,6 +12,7 @@ data/
 # IDE / tools
 .env
 .claude/
+.codex_logs/
 .gradio/
 .idea/
 .vscode/
