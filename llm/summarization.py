@@ -32,6 +32,7 @@ _FLAT_MAX_CHUNKS = 4
 
 # Дефолтный лимит слов на чанк если Ollama недоступна
 CHUNK_WORD_LIMIT_DEFAULT = 500
+TITLE_SUMMARY_CHARS = 1800
 OLLAMA_TIMEOUT_SEC = float(os.environ.get("OLLAMA_TIMEOUT_SEC", "120"))
 LEGACY_METHOD_ALIASES = {
     "Sequential": "Hierarchical",
@@ -409,12 +410,99 @@ def dispatch_merge(method: str, chunk_summaries: list) -> str:
     return _flat_merge(chunk_summaries)
 
 
-def build_title(summary_text: str) -> str:
-    return llm_call(
-        "Придумай краткое техническое название для базы знаний (3–5 слов). "
-        "Главные термины из текста, без метафор. Только название, без кавычек:\n\n"
-        + summary_text
-    ).strip().strip('"«»')
+def _compact_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _clean_title(raw: str) -> str:
+    title = _compact_text(raw)
+    title = re.sub(r"[\u200b-\u200f\ufeff]", "", title)
+    title = re.sub(r"^[#*\-\d\.\)\s]+", "", title)
+    title = re.sub(r"(?i)^(название|заголовок|тема|title)\s*[:\-]\s*", "", title)
+    title = title.strip().strip("\"'`«»“”„")
+    title = re.sub(r"\s+([,.;:!?])", r"\1", title)
+    title = title.rstrip(".!?")
+    words = title.split()
+    if len(words) > 10:
+        title = " ".join(words[:10]).rstrip(".,;:!?")
+    return title[:90].strip()
+
+
+def _title_case_first(text: str) -> str:
+    text = _clean_title(text)
+    return text[:1].upper() + text[1:] if text else text
+
+
+def _is_bad_title(title: str) -> bool:
+    title = _clean_title(title)
+    if len(title) < 5:
+        return True
+    if "�" in title or "⁇" in title:
+        return True
+    if re.search(r"[A-Z][a-z]+[A-Z][A-Za-z]*", title):
+        return True
+    if re.search(r"[A-Za-z]", title):
+        return True
+    if re.search(r"\b(DB|Base|Baze|Freedom|Lecture|Course)\b", title, re.IGNORECASE):
+        return True
+    words = title.split()
+    if len(words) < 2:
+        return True
+    if len(title.split()) > 10:
+        return True
+    generic_titles = {
+        "конспект лекции",
+        "лекция",
+        "основные темы",
+        "содержание лекции",
+        "краткое содержание",
+        "основные идеи",
+        "тема лекции",
+    }
+    if title.lower() in generic_titles:
+        return True
+    return False
+
+
+def _fallback_title_from_topics(topics: list) -> str:
+    good_topics = []
+    for topic in topics or []:
+        candidate = _clean_title(str(topic))
+        if not _is_bad_title(candidate):
+            good_topics.append(candidate.lower())
+        if len(good_topics) >= 2:
+            break
+
+    if len(good_topics) >= 2:
+        return _title_case_first(f"{good_topics[0]} и {good_topics[1]}")
+    if len(good_topics) == 1:
+        return _title_case_first(good_topics[0])
+    return "Конспект лекции"
+
+
+def build_title(summary_text: str, topics: list) -> str:
+    topics_text = ", ".join(str(t) for t in topics or [] if str(t).strip())
+    raw_title = llm_call(
+        "Придумай 3 варианта названия для лекции по конспекту и темам.\n\n"
+        "Требования:\n"
+        "- русский язык\n"
+        "- 3-7 слов\n"
+        "- каждое название с новой строки\n"
+        "- без даты\n"
+        "- без кавычек\n"
+        "- без точки в конце\n"
+        "- без английских слов\n"
+        "- без CamelCase\n"
+        "- без общих названий типа \"Конспект лекции\", \"Лекция\", \"Основные темы\"\n\n"
+        f"Темы:\n{topics_text}\n\n"
+        "Конспект:\n"
+        + _compact_text(summary_text)[:TITLE_SUMMARY_CHARS]
+    )
+    for line in raw_title.splitlines():
+        title = _title_case_first(line)
+        if not _is_bad_title(title):
+            return title
+    return _fallback_title_from_topics(topics)
 
 
 def extract_topics(summary_text: str) -> list:
@@ -472,13 +560,13 @@ def summarize_transcript(
     if event_callback:
         event_callback("Заголовок и темы...")
     try:
-        title = build_title(summary_text)
-    except Exception:
-        title = "Без названия"
-    try:
         topics = extract_topics(summary_text)
     except Exception:
         topics = []
+    try:
+        title = build_title(summary_text, topics)
+    except Exception:
+        title = "Без названия"
 
     structured_report = ""
     if want_structured_report:
